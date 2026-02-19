@@ -1,0 +1,27 @@
+# Normalize text files in the repository and keep LF endings.
+* text=auto eol=lf
+
+# Common source/document files
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.ini text eol=lf
+*.cfg text eol=lf
+*.sh text eol=lf
+
+# Windows scripts keep CRLF where expected
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.zip binary
+*.npy binary
