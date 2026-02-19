@@ -15,6 +15,10 @@ pip-wheel-metadata/
 venv/
 env/
 ENV/
+.python-version
+.env
+.env.*
+!.env.example
 
 # Test/tool caches
 .pytest_cache/
@@ -44,3 +48,12 @@ training_reward_curve.png
 sum_rate_comparison.png
 power_efficiency_comparison.png
 *.log
+
+# RL experiment artifacts
+checkpoints/
+models/
+logs/
+runs/
+tb_logs/
+*.monitor.csv
+*.monitor.json
