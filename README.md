@@ -26,67 +26,60 @@ Code/
 ```
 
 ## System Model
-We consider one base station and \(K\) single-antenna uplink users (\(3 \le K \le 5\)).
+We consider one base station and K single-antenna uplink users (3 <= K <= 5).
 
 ### Channel Model (Rayleigh Fading)
-The complex channel coefficient for user \(i\) is:
+The complex channel coefficient for user i is:
 
-$$
-h_i \sim \mathcal{CN}(0,1)
-$$
+$$ h_i \sim \mathcal{CN}(0,1) $$
 
-Hence, the channel power gain is \(|h_i|^2\), and channels are resampled every time step (time-varying fading).
+Hence, the channel power gain is |h_i|^2, and channels are resampled every time step (time-varying fading).
 
 ### SINR
-For user \(i\), the uplink SINR is:
+For user i, the uplink SINR is:
 
-$$
-\mathrm{SINR}_i
-=
-\frac{P_i |h_i|^2}
-{\sum_{j \ne i} P_j |h_j|^2 + \sigma^2}
-$$
+$$ \mathrm{SINR}_i = \frac{P_i |h_i|^2}{\sum_{j \ne i} P_j |h_j|^2 + \sigma^2} $$
 
 where:
-- \(P_i\): transmit power of user \(i\),
-- \(\sigma^2\): AWGN noise power.
+- P_i: transmit power of user i,
+- sigma_sq (or sigma^2): AWGN noise power variance, commonly written as σ².
 
 ### Spectral Efficiency
 Per-user spectral efficiency is:
 
-$$
-R_i = \log_2(1+\mathrm{SINR}_i)
-$$
+$$ R_i = \log_2(1+\mathrm{SINR}_i) $$
 
 ### Reward Function
 The RL reward at each time step is:
 
-$$
-\mathrm{Reward}
-=
-\sum_{i=1}^{K} R_i
-- \lambda \sum_{i=1}^{K} P_i
-$$
+$$ \mathrm{Reward} = \sum_{i=1}^{K} R_i - \lambda \sum_{i=1}^{K} P_i $$
 
 The first term pushes the controller toward high throughput, while the penalty term discourages unnecessary power usage.
 
 ### Fairness Metric (Jain's Index)
 Fairness over user rates is measured by:
 
-$$
-J
-=
-\frac{\left(\sum_{i=1}^{K} R_i\right)^2}
-{K \sum_{i=1}^{K} R_i^2}
-$$
+$$ J = \frac{\left(\sum_{i=1}^{K} R_i\right)^2}{K \sum_{i=1}^{K} R_i^2} $$
 
 Values close to 1 indicate fair rate distribution; lower values indicate imbalance.
 
 ## RL Formulation
-- Agent: centralized power controller at the base station.
-- State: \([|h_1|^2, |h_2|^2, \dots, |h_K|^2]\).
-- Action: continuous power vector \([P_1, P_2, \dots, P_K]\).
-- Action bounds: \(0 \le P_i \le P_{\max}\).
+The control problem is modeled as a continuous-action Markov Decision Process (MDP):
+
+- Agent:
+  centralized controller at the base station.
+- State s_t:
+  channel power-gain vector at time t,
+  `s_t = [|h_1|^2, |h_2|^2, ..., |h_K|^2]`.
+- Action a_t:
+  transmit-power vector at time t,
+  `a_t = [P_1, P_2, ..., P_K]`.
+- Action constraints:
+  `0 <= P_i <= P_max` for each user i (applied via clipping in code).
+- Transition:
+  channels are resampled every step (time-varying fading), giving the next state.
+- Reward:
+  `r_t = sum_i R_i - lambda * sum_i P_i`.
 
 ## DDPG Explanation
 DDPG is an off-policy actor-critic algorithm for continuous control.
@@ -94,15 +87,15 @@ DDPG is an off-policy actor-critic algorithm for continuous control.
 ### Actor Network
 - Input: current state (channel gains).
 - Output: continuous action (power allocation vector).
-- Role: learns a deterministic policy \(\mu(s)\).
+- Role: learns a deterministic policy mu(s).
 
 ### Critic Network
-- Input: state-action pair \((s,a)\).
-- Output: Q-value \(Q(s,a)\), i.e., expected long-term return.
+- Input: state-action pair (s, a).
+- Output: Q-value Q(s, a), i.e., expected long-term return.
 - Role: evaluates actor decisions.
 
 ### Replay Buffer
-- Stores transitions \((s_t, a_t, r_t, s_{t+1})\).
+- Stores transitions (s_t, a_t, r_t, s_{t+1}).
 - Breaks temporal correlation by sampling random mini-batches.
 - Improves data efficiency via off-policy reuse.
 
@@ -121,10 +114,10 @@ DDPG is an off-policy actor-critic algorithm for continuous control.
 The following non-learning methods are implemented for comparison:
 
 ### 1. Equal Power Allocation
-All users transmit at the same power (here, \(P_{\max}\)).
+All users transmit at the same power (here, P_max).
 
 ### 2. Fractional Power Control
-Power is inversely adjusted according to channel gain with exponent \(\alpha=0.5\), balancing compensation and stability.
+Power is inversely adjusted according to channel gain with exponent alpha=0.5, balancing compensation and stability.
 
 ### 3. Greedy SINR Method
 Full power is assigned to the strongest channel user, while other users get a small residual power.
