@@ -1,12 +1,19 @@
 """
-Evaluate trained DDPG against baseline power-control methods.
+Evaluation script: compare trained DDPG against analytical baselines.
+
+Metrics reported:
+- Average sum rate
+- Average total power
+- Average Jain fairness index
+- Power efficiency = sum-rate / total power
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
-from pathlib import Path
 from stable_baselines3 import DDPG
 
 from baselines import evaluate_static_policy_on_channels
@@ -16,6 +23,13 @@ from environment import UplinkPowerControlEnv, compute_sinr_rates, jain_fairness
 def generate_channel_sequence(
     n_users: int, n_steps: int, seed: int = 2026
 ) -> np.ndarray:
+    """
+    Generate a shared channel-gain dataset for fair policy comparison.
+
+    We explicitly sample h_i ~ CN(0,1) and map to gains |h_i|^2.
+    Using one fixed sequence for all methods removes randomness bias in
+    method-to-method comparison.
+    """
     rng = np.random.default_rng(seed)
     h_real = rng.normal(0.0, np.sqrt(0.5), size=(n_steps, n_users))
     h_imag = rng.normal(0.0, np.sqrt(0.5), size=(n_steps, n_users))
@@ -30,14 +44,26 @@ def evaluate_ddpg_on_channels(
     p_max: float,
     noise_power: float,
 ) -> dict[str, float]:
-    sum_rates = []
-    total_powers = []
-    fairness_values = []
+    """
+    Evaluate deterministic DDPG actions over a pre-generated channel sequence.
+
+    For each channel realization:
+    - Query actor policy to obtain continuous power action.
+    - Clip to [0, p_max] to enforce feasibility.
+    - Compute rate/power/fairness statistics.
+    """
+    sum_rates: list[float] = []
+    total_powers: list[float] = []
+    fairness_values: list[float] = []
 
     for gains in channel_gains:
         action, _ = model.predict(gains, deterministic=True)
+
+        # Safety clipping keeps actions within physical transmit-power bounds.
         powers = np.clip(np.asarray(action, dtype=np.float32), 0.0, p_max)
-        _, rates = compute_sinr_rates(gains=gains, powers=powers, noise_power=noise_power)
+        _, rates = compute_sinr_rates(
+            gains=gains, powers=powers, noise_power=noise_power
+        )
         sum_rates.append(float(np.sum(rates)))
         total_powers.append(float(np.sum(powers)))
         fairness_values.append(jain_fairness(rates))
@@ -56,6 +82,13 @@ def evaluate_ddpg_on_channels(
 
 
 def plot_metric_bars(results: dict[str, dict[str, float]]) -> None:
+    """
+    Plot and save summary bar charts.
+
+    Required plots in this project:
+    - Sum-rate comparison
+    - Power-efficiency comparison
+    """
     methods = list(results.keys())
     sum_rates = [results[m]["avg_sum_rate"] for m in methods]
     power_eff = [results[m]["power_efficiency"] for m in methods]
@@ -80,6 +113,9 @@ def plot_metric_bars(results: dict[str, dict[str, float]]) -> None:
 
 
 def print_results(results: dict[str, dict[str, float]]) -> None:
+    """
+    Print all evaluation metrics in a compact table-like format.
+    """
     print("\nPerformance comparison:")
     for method, metrics in results.items():
         print(f"\n{method}")
@@ -90,11 +126,13 @@ def print_results(results: dict[str, dict[str, float]]) -> None:
 
 
 if __name__ == "__main__":
+    # Evaluation settings.
     n_users = 4
     p_max = 1.0
     noise_power = 1e-2
     n_eval_steps = 10_000
 
+    # Shared channel dataset for method fairness.
     channel_seq = generate_channel_sequence(
         n_users=n_users, n_steps=n_eval_steps, seed=2026
     )
@@ -118,6 +156,7 @@ if __name__ == "__main__":
         ),
     )
 
+    # Compare learning-based policy with hand-crafted baselines.
     results = {
         "DDPG": evaluate_ddpg_on_channels(
             model=model,

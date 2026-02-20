@@ -1,5 +1,11 @@
 """
-Baseline power-control policies for uplink power allocation.
+Baseline power-allocation rules for comparison against DDPG.
+
+This module contains simple non-learning policies that map channel gains
+to transmit powers. They provide interpretable references for:
+- throughput efficiency,
+- power consumption,
+- and fairness behavior.
 """
 
 from __future__ import annotations
@@ -11,7 +17,12 @@ from environment import compute_sinr_rates, jain_fairness
 
 def equal_power_allocation(n_users: int, p_max: float) -> np.ndarray:
     """
-    Equal power for all users at full-scale level.
+    Equal power baseline: all users transmit at the same maximum power.
+
+    Rationale:
+    - Simplest feasible allocation.
+    - Often achieves reasonable throughput in symmetric settings.
+    - Usually ignores fairness-through-interference tradeoffs.
     """
     return np.full(shape=(n_users,), fill_value=p_max, dtype=np.float32)
 
@@ -20,8 +31,18 @@ def fractional_power_control(
     gains: np.ndarray, p_max: float, alpha: float = 0.5
 ) -> np.ndarray:
     """
-    Fractional power control based on inverse channel gain.
-    alpha = 0 -> equal power, alpha = 1 -> full channel inversion trend.
+    Fractional power control (FPC) baseline.
+
+    Idea:
+    - Users with weak channel gains receive relatively higher power.
+    - Users with strong channel gains receive relatively lower power.
+    - Controlled by exponent alpha:
+      alpha=0 behaves like equal power; alpha=1 approximates full inversion.
+
+    Implementation:
+    1) Compute (|h_i|^2)^(-alpha).
+    2) Normalize by maximum value to keep outputs in [0, 1].
+    3) Scale by p_max and clip for numerical safety.
     """
     gains = np.asarray(gains, dtype=np.float64)
     inv_term = np.power(gains + 1e-12, -alpha)
@@ -32,8 +53,16 @@ def fractional_power_control(
 
 def greedy_sinr_allocation(gains: np.ndarray, p_max: float) -> np.ndarray:
     """
-    Greedy SINR-based rule:
-    Allocate maximum power to the strongest user and minimal power to others.
+    Greedy SINR-style baseline.
+
+    Rule:
+    - Assign full power to the user with the strongest channel.
+    - Assign small residual power (5% of p_max) to all others.
+
+    Interpretation:
+    - Aggressively maximizes immediate strongest-link throughput.
+    - Can produce high sum rate in interference-limited scenarios.
+    - Typically sacrifices fairness among users.
     """
     gains = np.asarray(gains, dtype=np.float64)
     n_users = gains.size
@@ -50,11 +79,21 @@ def evaluate_static_policy_on_channels(
     noise_power: float,
 ) -> dict[str, float]:
     """
-    Evaluate one baseline policy over a pre-generated channel sequence.
+    Evaluate one baseline policy over a fixed sequence of channel gains.
+
+    Using the same channel sequence for all methods is essential for fair
+    comparison: differences in performance then come from policy behavior,
+    not from random channel luck.
+
+    Reported metrics:
+    - average sum rate,
+    - average total power,
+    - average Jain fairness index (computed over per-user rates),
+    - power efficiency = average_sum_rate / average_total_power.
     """
-    sum_rates = []
-    total_powers = []
-    fairness_values = []
+    sum_rates: list[float] = []
+    total_powers: list[float] = []
+    fairness_values: list[float] = []
 
     for gains in channel_gains:
         n_users = gains.size
@@ -67,7 +106,10 @@ def evaluate_static_policy_on_channels(
         else:
             raise ValueError(f"Unknown policy_name: {policy_name}")
 
-        _, rates = compute_sinr_rates(gains=gains, powers=powers, noise_power=noise_power)
+        # Compute per-user rates under the chosen baseline action.
+        _, rates = compute_sinr_rates(
+            gains=gains, powers=powers, noise_power=noise_power
+        )
         sum_rates.append(float(np.sum(rates)))
         total_powers.append(float(np.sum(powers)))
         fairness_values.append(jain_fairness(rates))

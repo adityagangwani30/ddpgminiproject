@@ -1,11 +1,26 @@
 """
-Custom Gymnasium environment for DDPG-based uplink power control.
+Wireless uplink environment for DDPG-based power control.
+
+System model summary:
+- Single-cell uplink with one base station and K users (3 <= K <= 5).
+- Flat fading channel with per-user coefficient h_i.
+- Rayleigh fading assumption: h_i ~ CN(0, 1), therefore |h_i|^2 ~ Exp(mean=1).
+- Continuous transmit powers with box constraints: 0 <= P_i <= P_max.
+
+At each time step:
+1) A power vector is selected by the agent.
+2) SINR and spectral efficiency are computed for all users.
+3) Reward is returned as
+   sum_i log2(1 + SINR_i) - lambda_power * sum_i P_i.
+4) A new independent fading sample is generated for the next state.
 """
 
 from __future__ import annotations
 
-import numpy as np
+from typing import Any
+
 import gymnasium as gym
+import numpy as np
 from gymnasium import spaces
 
 
@@ -13,15 +28,32 @@ def compute_sinr_rates(
     gains: np.ndarray, powers: np.ndarray, noise_power: float
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Compute per-user SINR and spectral efficiency for a single-cell uplink.
+    Compute per-user SINR and spectral efficiency for one uplink slot.
+
+    Mathematical model for user i:
+        SINR_i = (P_i * |h_i|^2) / (sum_{j != i} P_j * |h_j|^2 + sigma^2)
+        R_i    = log2(1 + SINR_i)
+
+    Args:
+        gains: Vector [|h_1|^2, ..., |h_K|^2].
+        powers: Vector [P_1, ..., P_K].
+        noise_power: AWGN variance sigma^2.
+
+    Returns:
+        sinr: Per-user SINR values.
+        rates: Per-user spectral efficiencies in bps/Hz.
     """
+    # Convert to float32 to keep arithmetic consistent and fast.
     gains = np.asarray(gains, dtype=np.float32)
     powers = np.asarray(powers, dtype=np.float32)
     noise_power = np.float32(noise_power)
 
+    # Received useful/interfering powers at the base station.
     received_signal = powers * gains
     total_received = np.sum(received_signal, dtype=np.float32)
     interference = total_received - received_signal
+
+    # Small epsilon avoids division-by-zero in degenerate edge cases.
     sinr = received_signal / (interference + noise_power + 1e-12)
     rates = np.log2(1.0 + sinr)
     return sinr, rates
@@ -29,7 +61,20 @@ def compute_sinr_rates(
 
 def jain_fairness(values: np.ndarray) -> float:
     """
-    Compute Jain's fairness index.
+    Compute Jain's fairness index for a non-negative performance vector.
+
+    For x = [x_1, ..., x_K]:
+        J(x) = (sum_i x_i)^2 / (K * sum_i x_i^2)
+
+    Interpretation:
+    - J close to 1: highly fair distribution.
+    - J close to 1/K: highly unequal distribution.
+
+    Args:
+        values: Typically per-user rates.
+
+    Returns:
+        Jain fairness index in (0, 1].
     """
     values = np.asarray(values, dtype=np.float64)
     numerator = np.square(np.sum(values))
@@ -39,9 +84,12 @@ def jain_fairness(values: np.ndarray) -> float:
 
 class UplinkPowerControlEnv(gym.Env):
     """
-    State: channel gains |h_i|^2 for K users.
-    Action: continuous user powers P_i in [0, P_max].
-    Reward: sum_i log2(1 + SINR_i) - lambda_power * sum_i P_i.
+    Gymnasium environment for centralized uplink power allocation.
+
+    RL formulation:
+    - State s_t: channel gain vector [|h_1|^2, ..., |h_K|^2].
+    - Action a_t: power vector [P_1, ..., P_K], each bounded in [0, P_max].
+    - Reward r_t: sum spectral efficiency minus weighted total power.
     """
 
     metadata = {"render_modes": []}
@@ -56,6 +104,18 @@ class UplinkPowerControlEnv(gym.Env):
         detailed_info: bool = False,
         seed: int | None = None,
     ) -> None:
+        """
+        Initialize environment configuration and Gym spaces.
+
+        Args:
+            n_users: Number of uplink users (restricted to 3-5 in this project).
+            p_max: Maximum transmit power per user.
+            noise_power: AWGN variance sigma^2.
+            lambda_power: Reward penalty coefficient for power usage.
+            episode_length: Number of time steps before episode termination.
+            detailed_info: If True, return richer per-step debug statistics.
+            seed: Random seed for reproducibility.
+        """
         super().__init__()
         if n_users < 3 or n_users > 5:
             raise ValueError("n_users must be between 3 and 5.")
@@ -67,12 +127,14 @@ class UplinkPowerControlEnv(gym.Env):
         self.episode_length = int(episode_length)
         self.detailed_info = bool(detailed_info)
 
+        # State: non-negative channel gains |h_i|^2.
         self.observation_space = spaces.Box(
             low=0.0,
             high=np.finfo(np.float32).max,
             shape=(self.n_users,),
             dtype=np.float32,
         )
+        # Action: per-user powers, explicitly bounded by physical constraints.
         self.action_space = spaces.Box(
             low=0.0,
             high=self.p_max,
@@ -85,11 +147,30 @@ class UplinkPowerControlEnv(gym.Env):
         self.timestep = 0
 
     def _sample_channel_gains(self) -> np.ndarray:
-        # If h_i ~ CN(0,1), then |h_i|^2 ~ Exp(mean=1). Sampling directly is equivalent.
+        """
+        Sample one channel-gain vector for the next state.
+
+        Instead of explicitly sampling complex Gaussian h_i and squaring magnitude,
+        we directly sample |h_i|^2 from Exp(1), which is equivalent under
+        h_i ~ CN(0,1). This is computationally cheaper and mathematically exact.
+        """
         gains = self.rng.exponential(scale=1.0, size=self.n_users)
         return gains.astype(np.float32)
 
-    def reset(self, *, seed: int | None = None, options: dict | None = None):
+    def reset(
+        self, *, seed: int | None = None, options: dict[str, Any] | None = None
+    ) -> tuple[np.ndarray, dict[str, Any]]:
+        """
+        Start a new episode and return the initial state.
+
+        Args:
+            seed: Optional seed to reinitialize RNG.
+            options: Gym API placeholder (unused in this environment).
+
+        Returns:
+            observation: Initial channel-gain vector.
+            info: Empty dictionary by design.
+        """
         super().reset(seed=seed)
         if seed is not None:
             self.rng = np.random.default_rng(seed)
@@ -98,8 +179,22 @@ class UplinkPowerControlEnv(gym.Env):
         self.current_gains = self._sample_channel_gains()
         return self.current_gains.copy(), {}
 
-    def step(self, action: np.ndarray):
+    def step(
+        self, action: np.ndarray
+    ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        """
+        Advance one time step using the selected power allocation.
+
+        Step logic:
+        1) Action clipping enforces physical power constraints.
+        2) SINR and rates are computed using the current channel realization.
+        3) Reward combines throughput gain and power penalty.
+        4) Termination is checked by fixed horizon.
+        5) Next state is sampled as a fresh independent fading realization.
+        """
         self.timestep += 1
+
+        # Even if the policy outputs invalid powers, clipping guarantees feasibility.
         powers = np.clip(np.asarray(action, dtype=np.float32), 0.0, self.p_max)
 
         sinr, rates = compute_sinr_rates(
@@ -107,10 +202,12 @@ class UplinkPowerControlEnv(gym.Env):
         )
         sum_rate = float(np.sum(rates))
         total_power = float(np.sum(powers))
+
+        # Reward encourages high total spectral efficiency with power awareness.
         reward = sum_rate - self.lambda_power * total_power
 
         fairness = jain_fairness(rates)
-        info = {
+        info: dict[str, Any] = {
             "sum_rate": sum_rate,
             "total_power": total_power,
             "fairness": fairness,
@@ -124,5 +221,6 @@ class UplinkPowerControlEnv(gym.Env):
         terminated = self.timestep >= self.episode_length
         truncated = False
 
+        # Independent block fading model: new sample every slot.
         self.current_gains = self._sample_channel_gains()
         return self.current_gains.copy(), float(reward), terminated, truncated, info

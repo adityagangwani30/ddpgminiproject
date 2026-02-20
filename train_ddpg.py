@@ -1,5 +1,11 @@
 """
-Train DDPG agent for adaptive uplink transmit power control.
+Train a DDPG agent for adaptive uplink transmit power control.
+
+Core learning idea:
+- Actor network proposes continuous power vector actions.
+- Critic network evaluates action quality (Q-value).
+- Replay buffer stores transitions for off-policy updates.
+- Target networks stabilize learning via slow parameter tracking.
 """
 
 from __future__ import annotations
@@ -21,6 +27,12 @@ from environment import UplinkPowerControlEnv
 
 @dataclass
 class TrainConfig:
+    """
+    Hyperparameter container for training and reporting.
+
+    Values are grouped to make experiment settings explicit and reproducible.
+    """
+
     n_users: int = 4
     p_max: float = 1.0
     noise_power: float = 1e-2
@@ -28,11 +40,22 @@ class TrainConfig:
     episode_length: int = 400
     total_timesteps: int = 20_000
     seed: int = 42
+
+    # Replay buffer parameters:
+    # - buffer_size controls memory of past transitions.
+    # - learning_starts delays updates until enough experience is collected.
+    # - batch_size controls sample size per gradient step.
     buffer_size: int = 80_000
     learning_starts: int = 500
     batch_size: int = 128
+
+    # Update schedule:
+    # - train_freq_steps defines how often to trigger optimization.
+    # - gradient_steps defines how many updates to run when training triggers.
     train_freq_steps: int = 4
     gradient_steps: int = 1
+
+    # Two-layer MLP width for actor and critic.
     hidden_size: int = 128
     verbose: int = 0
     device: str = "auto"
@@ -44,6 +67,12 @@ class TrainConfig:
 
 
 def plot_training_rewards(episode_rewards: list[float], output_path: str) -> None:
+    """
+    Plot and save the convergence curve of episodic training rewards.
+
+    The raw curve may be noisy due to fading randomness and exploration noise,
+    so we additionally plot a moving-average trend.
+    """
     if not episode_rewards:
         return
 
@@ -72,7 +101,20 @@ def plot_training_rewards(episode_rewards: list[float], output_path: str) -> Non
 
 
 def train_ddpg(config: TrainConfig) -> tuple[DDPG, list[float]]:
-    # Small MLP + single-threaded torch usually runs faster for this lightweight env.
+    """
+    Build environment and train DDPG with the configured hyperparameters.
+
+    Notes on DDPG mechanics used by Stable-Baselines3:
+    - Replay buffer:
+      transitions (s, a, r, s') are stored up to buffer_size and sampled
+      uniformly for off-policy learning.
+    - Target networks:
+      SB3 maintains target actor/critic and performs Polyak averaging with
+      coefficient tau (set below) to stabilize bootstrapped Q-updates.
+    - Exploration:
+      Gaussian action noise is added to actor outputs during training.
+    """
+    # For this compact network/problem, one CPU thread is usually faster.
     if config.cpu_threads > 0:
         torch.set_num_threads(config.cpu_threads)
 
@@ -85,24 +127,30 @@ def train_ddpg(config: TrainConfig) -> tuple[DDPG, list[float]]:
         detailed_info=False,
         seed=config.seed,
     )
+    # Monitor records episodic returns and lengths for diagnostics.
     env = Monitor(env)
 
     action_dim = env.action_space.shape[0]
     action_noise = NormalActionNoise(
         mean=np.zeros(action_dim, dtype=np.float32),
+        # Exploration scale: 10% of maximum power per action dimension.
         sigma=(0.1 * np.ones(action_dim, dtype=np.float32) * config.p_max),
     )
 
     model = DDPG(
         policy="MlpPolicy",
         env=env,
+        # Actor and critic are MLPs with this shared architecture template.
         policy_kwargs={"net_arch": [config.hidden_size, config.hidden_size]},
         learning_rate=1e-3,
+        # Replay buffer and sampling controls:
         buffer_size=config.buffer_size,
         learning_starts=config.learning_starts,
         batch_size=config.batch_size,
+        # Target network update rate (Polyak averaging coefficient).
         tau=0.005,
         gamma=0.99,
+        # Optimization schedule:
         train_freq=(config.train_freq_steps, "step"),
         gradient_steps=config.gradient_steps,
         action_noise=action_noise,
@@ -111,7 +159,11 @@ def train_ddpg(config: TrainConfig) -> tuple[DDPG, list[float]]:
         device=config.device,
     )
 
+    # The internal training loop alternates:
+    # collect step -> store in replay buffer -> (if due) sample batch -> update.
     model.learn(total_timesteps=config.total_timesteps, progress_bar=False)
+
+    # Episode rewards are extracted from Monitor for convergence plotting.
     episode_rewards = [float(x) for x in env.get_episode_rewards()]
 
     model.save(config.model_path)
@@ -121,6 +173,11 @@ def train_ddpg(config: TrainConfig) -> tuple[DDPG, list[float]]:
 
 
 def quick_policy_report(model: DDPG, config: TrainConfig, n_eval_steps: int) -> None:
+    """
+    Compute a lightweight post-training report on unseen channel realizations.
+
+    This is a fast sanity-check report (not a full benchmark script).
+    """
     env = UplinkPowerControlEnv(
         n_users=config.n_users,
         p_max=config.p_max,
@@ -132,12 +189,13 @@ def quick_policy_report(model: DDPG, config: TrainConfig, n_eval_steps: int) -> 
     )
 
     obs, _ = env.reset()
-    sum_rates = []
-    total_powers = []
-    fairness_values = []
-    rewards = []
+    sum_rates: list[float] = []
+    total_powers: list[float] = []
+    fairness_values: list[float] = []
+    rewards: list[float] = []
 
     for _ in range(n_eval_steps):
+        # Deterministic action removes exploration noise during reporting.
         action, _ = model.predict(obs, deterministic=True)
         obs, reward, terminated, truncated, info = env.step(action)
         rewards.append(float(reward))
@@ -155,12 +213,15 @@ def quick_policy_report(model: DDPG, config: TrainConfig, n_eval_steps: int) -> 
 
 
 def parse_args() -> argparse.Namespace:
+    """
+    Parse command-line arguments for convenient experiment control.
+    """
     parser = argparse.ArgumentParser(description="Train DDPG for uplink power control.")
     parser.add_argument(
         "--mode",
         choices=["quick", "fast", "balanced", "full"],
         default="balanced",
-        help="quick/fast: fastest, balanced: good speed-quality tradeoff, full: 50k steps.",
+        help="quick/fast: fastest, balanced: speed-quality tradeoff, full: 50k steps.",
     )
     parser.add_argument(
         "--timesteps",
@@ -178,7 +239,7 @@ def parse_args() -> argparse.Namespace:
         "--cpu-threads",
         type=int,
         default=1,
-        help="Torch CPU threads (1 is typically fastest for this small network).",
+        help="Torch CPU threads (1 is often fastest for this small model).",
     )
     parser.add_argument(
         "--eval-steps",
@@ -189,12 +250,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--skip-report",
         action="store_true",
-        help="Skip final policy report to save time.",
+        help="Skip final policy report to reduce runtime.",
     )
     return parser.parse_args()
 
 
 def apply_mode_preset(cfg: TrainConfig, mode: str) -> None:
+    """
+    Apply predefined training presets.
+
+    Presets alter timesteps and optimization intensity while preserving
+    the same environment and algorithmic structure.
+    """
     if mode in ("quick", "fast"):
         cfg.total_timesteps = 8_000
         cfg.episode_length = 300
