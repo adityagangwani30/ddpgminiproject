@@ -1,11 +1,7 @@
-# Core numerical and plotting libraries
 numpy>=1.24
 matplotlib>=3.7
-
-# RL environment/API
 gymnasium>=1.0
 shimmy>=2.0
-
-# RL algorithm stack
 stable-baselines3>=2.3.0
 torch>=2.2.0
+pandas>=2.1

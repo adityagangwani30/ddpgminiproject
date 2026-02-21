@@ -1,199 +1,113 @@
 # DDPG Based Adaptive Transmit Power Control in a Single-Cell Wireless Network
 
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Stable-Baselines3](https://img.shields.io/badge/Stable--Baselines3-2.3%2B-orange.svg)](https://github.com/DLR-RM/stable-baselines3)
+
 ## Project Overview
-This project studies adaptive uplink transmit power control for a single-cell wireless network using Deep Deterministic Policy Gradient (DDPG).  
-The base station acts as a centralized controller and decides continuous transmit powers for all users at each time step.
+This project addresses adaptive uplink transmit power control in a single-cell wireless network.  
+A centralized controller (base station) observes channel conditions and allocates user transmit powers to optimize network performance.
 
-The objective is to maximize total spectral efficiency while penalizing excessive transmit power, which creates a practical throughput-versus-energy tradeoff.
+The objective is to maximize spectral efficiency while penalizing excessive power usage.  
+Adaptive power control is important because wireless channels vary over time and static policies cannot consistently balance throughput, energy usage, and fairness.
 
-## Directory Structure
+Deep Deterministic Policy Gradient (DDPG) is used because the action space (per-user transmit powers) is continuous, and DDPG is well-suited for continuous control with actor-critic learning.
+
+## System Model
+We consider a single-cell uplink scenario with \(K\) users.
+
+Channel fading:
+\[
+h_i \sim \mathcal{CN}(0,1)
+\]
+
+SINR for user \(i\):
+\[
+\mathrm{SINR}_i = \frac{P_i |h_i|^2}{\sum_{j \ne i} P_j |h_j|^2 + \sigma^2}
+\]
+
+Spectral efficiency:
+\[
+R_i = \log_2(1 + \mathrm{SINR}_i)
+\]
+
+Reward:
+\[
+\mathrm{Reward} = \sum_{i=1}^{K} R_i - \lambda \sum_{i=1}^{K} P_i
+\]
+
+Jain's fairness index:
+\[
+J = \frac{\left(\sum_{i=1}^{K} R_i\right)^2}{K \sum_{i=1}^{K} R_i^2}
+\]
+
+## DDPG Formulation
+- `Agent`: centralized controller at the base station.
+- `State`: current channel gain vector \([|h_1|^2, \dots, |h_K|^2]\).
+- `Action`: continuous transmit power vector \([P_1, \dots, P_K]\), clipped to \([0, P_{\max}]\).
+- `Reward`: throughput-power tradeoff shown above.
+- `Actor-Critic`: actor outputs deterministic power allocation; critic estimates \(Q(s,a)\) to guide policy updates through deterministic policy gradients.
+
+## Project Structure
 ```text
-Code/
+project/
+|
 |-- environment.py
 |-- baselines.py
 |-- train_ddpg.py
 |-- evaluation.py
+|-- demo.py
+|-- config.py
 |-- requirements.txt
-|-- run_on_colab.ipynb
-|-- README.md
-|-- .gitignore
-|-- .gitattributes
-|-- ddpg_power_control_model.zip            # generated after training
-|-- training_episode_rewards.npy            # generated after training
-|-- training_reward_curve.png               # generated after training
-|-- sum_rate_comparison.png                 # generated after evaluation
-|-- power_efficiency_comparison.png         # generated after evaluation
+`-- README.md
 ```
 
-## System Model
-We consider one base station and K single-antenna uplink users (3 <= K <= 5).
-
-### Channel Model (Rayleigh Fading)
-The complex channel coefficient for user i is:
-
-$$ h_i \sim \mathcal{CN}(0,1) $$
-
-Hence, the channel power gain is |h_i|^2, and channels are resampled every time step (time-varying fading).
-
-### SINR
-For user i, the uplink SINR is:
-
-$$ \mathrm{SINR}_i = \frac{P_i |h_i|^2}{\sum_{j \ne i} P_j |h_j|^2 + \sigma^2} $$
-
-where:
-- P_i: transmit power of user i,
-- sigma_sq (or sigma^2): AWGN noise power variance, commonly written as σ².
-
-### Spectral Efficiency
-Per-user spectral efficiency is:
-
-$$ R_i = \log_2(1+\mathrm{SINR}_i) $$
-
-### Reward Function
-The RL reward at each time step is:
-
-$$ \mathrm{Reward} = \sum_{i=1}^{K} R_i - \lambda \sum_{i=1}^{K} P_i $$
-
-The first term pushes the controller toward high throughput, while the penalty term discourages unnecessary power usage.
-
-### Fairness Metric (Jain's Index)
-Fairness over user rates is measured by:
-
-$$ J = \frac{\left(\sum_{i=1}^{K} R_i\right)^2}{K \sum_{i=1}^{K} R_i^2} $$
-
-Values close to 1 indicate fair rate distribution; lower values indicate imbalance.
-
-## RL Formulation
-The control problem is modeled as a continuous-action Markov Decision Process (MDP):
-
-- Agent:
-  centralized controller at the base station.
-- State s_t:
-  channel power-gain vector at time t,
-  `s_t = [|h_1|^2, |h_2|^2, ..., |h_K|^2]`.
-- Action a_t:
-  transmit-power vector at time t,
-  `a_t = [P_1, P_2, ..., P_K]`.
-- Action constraints:
-  `0 <= P_i <= P_max` for each user i (applied via clipping in code).
-- Transition:
-  channels are resampled every step (time-varying fading), giving the next state.
-- Reward:
-  `r_t = sum_i R_i - lambda * sum_i P_i`.
-
-## DDPG Explanation
-DDPG is an off-policy actor-critic algorithm for continuous control.
-
-### Actor Network
-- Input: current state (channel gains).
-- Output: continuous action (power allocation vector).
-- Role: learns a deterministic policy mu(s).
-
-### Critic Network
-- Input: state-action pair (s, a).
-- Output: Q-value Q(s, a), i.e., expected long-term return.
-- Role: evaluates actor decisions.
-
-### Replay Buffer
-- Stores transitions (s_t, a_t, r_t, s_{t+1}).
-- Breaks temporal correlation by sampling random mini-batches.
-- Improves data efficiency via off-policy reuse.
-
-### Target Networks
-- DDPG uses slowly updated target actor and target critic.
-- Soft update (Polyak averaging) stabilizes training:
-  - online parameters change quickly,
-  - target parameters track them smoothly.
-
-### Policy Update
-- Critic is updated by TD error minimization.
-- Actor is updated through deterministic policy gradient to maximize critic-estimated Q-values.
-- Gaussian action noise is added during training for exploration.
-
-## Baseline Methods
-The following non-learning methods are implemented for comparison:
-
-### 1. Equal Power Allocation
-All users transmit at the same power (here, P_max).
-
-### 2. Fractional Power Control
-Power is inversely adjusted according to channel gain with exponent alpha=0.5, balancing compensation and stability.
-
-### 3. Greedy SINR Method
-Full power is assigned to the strongest channel user, while other users get a small residual power.
-
-## Code Modules
-### `environment.py`
-- Custom Gymnasium environment.
-- Channel sampling, state generation, power clipping, SINR/rate computation, and reward calculation.
-- Includes Jain fairness utility.
-
-### `baselines.py`
-- Baseline power-control policies.
-- Baseline evaluation routine over shared channel realizations.
-
-### `train_ddpg.py`
-- DDPG model creation and training loop via Stable-Baselines3.
-- Uses replay buffer, target network updates, and normal action noise.
-- Saves trained model, reward history, and convergence plot.
-
-### `evaluation.py`
-- Loads trained model and compares with baselines.
-- Reports average sum rate, power usage, fairness, and power efficiency.
-- Generates comparison plots.
-
-## Results and Outputs
-After running training and evaluation, the project produces:
-
-### 1. Convergence Curve
-- `training_reward_curve.png`
-- Shows episode reward trend across training.
-
-### 2. Sum Rate Comparison
-- `sum_rate_comparison.png`
-- Bar chart comparing average system sum rate across DDPG and baselines.
-
-### 3. Power Efficiency Comparison
-- `power_efficiency_comparison.png`
-- Bar chart comparing throughput-per-power performance.
-
-### 4. Fairness Comparison
-- Jain fairness index is printed for each method in evaluation logs.
-- This allows direct fairness comparison alongside throughput and power metrics.
-
-## Installation and Run Instructions
-Use Python 3.10+.
-
-### 1) Install dependencies
+## Installation
 ```bash
+git clone <repo-url>
+cd project
 pip install -r requirements.txt
 ```
 
-### 2) Train DDPG model
+## Run Instructions
+Training:
 ```bash
 python train_ddpg.py
 ```
 
-Optional modes:
-```bash
-python train_ddpg.py --mode quick
-python train_ddpg.py --mode balanced
-python train_ddpg.py --mode full
-```
-
-### 3) Evaluate DDPG against baselines
+Evaluation:
 ```bash
 python evaluation.py
 ```
 
+Demo (live channel/power adaptation visualization):
+```bash
+python demo.py
+```
+
 ## Google Colab
-Use the provided notebook:
-- `run_on_colab.ipynb`
+A Colab-ready notebook is provided as:
+- `Run_Project_On_Colab.ipynb`
 
-Direct link:
-- https://colab.research.google.com/github/adityagangwani30/ddpgminiproject/blob/main/run_on_colab.ipynb
+Typical usage in Colab:
+1. Open the notebook in Google Colab.
+2. Set repository path (clone or uploaded project).
+3. Run all cells from top to bottom to install dependencies, train, evaluate, and visualize results.
 
-## Notes for Reproducibility
-- Fixed random seeds are used in training/evaluation scripts.
-- For fair baseline comparison, all methods are evaluated on the same channel sequence.
-- Ensure the same Python environment is used for installation and execution.
+## Results
+The repository evaluation pipeline reports and visualizes:
+- `Convergence`: training reward trend over episodes/timesteps.
+- `Sum-rate comparison`: DDPG vs Equal/Fractional/Greedy baselines.
+- `Fairness`: Jain's fairness index comparison across methods.
+- `Power efficiency`: \(\text{Sum Rate} / \text{Total Power}\).
+- `User-rate CDF`: distribution-level behavior for each method.
+
+## Future Work
+- Extend to multi-cell interference coordination.
+- Include time-correlated fading and mobility models.
+- Compare with additional RL algorithms (TD3, SAC, PPO).
+- Add confidence intervals across more random seeds.
+- Explore constrained and multi-objective RL formulations.
+
+## License
+This project is released under the MIT License.

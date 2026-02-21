@@ -23,6 +23,8 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+import config as project_config
+
 
 def compute_sinr_rates(
     gains: np.ndarray, powers: np.ndarray, noise_power: float
@@ -96,11 +98,11 @@ class UplinkPowerControlEnv(gym.Env):
 
     def __init__(
         self,
-        n_users: int = 4,
-        p_max: float = 1.0,
-        noise_power: float = 1e-2,
-        lambda_power: float = 0.1,
-        episode_length: int = 200,
+        n_users: int = project_config.N_USERS,
+        p_max: float = project_config.P_MAX,
+        noise_power: float = project_config.NOISE_POWER,
+        lambda_power: float = project_config.LAMBDA_POWER,
+        episode_length: int = project_config.EPISODE_LENGTH,
         detailed_info: bool = False,
         seed: int | None = None,
     ) -> None:

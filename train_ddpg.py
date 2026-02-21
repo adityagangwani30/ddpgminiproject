@@ -1,19 +1,13 @@
-"""
-Train a DDPG agent for adaptive uplink transmit power control.
-
-Core learning idea:
-- Actor network proposes continuous power vector actions.
-- Critic network evaluates action quality (Q-value).
-- Replay buffer stores transitions for off-policy updates.
-- Target networks stabilize learning via slow parameter tracking.
-"""
+"""Train a DDPG agent for adaptive uplink transmit power control."""
 
 from __future__ import annotations
 
 import argparse
-import os
+import logging
+import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -22,99 +16,143 @@ from stable_baselines3 import DDPG
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.noise import NormalActionNoise
 
+import config as project_config
 from environment import UplinkPowerControlEnv
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
 class TrainConfig:
-    """
-    Hyperparameter container for training and reporting.
+    """Hyperparameters and artifact paths for DDPG training."""
 
-    Values are grouped to make experiment settings explicit and reproducible.
-    """
+    n_users: int = project_config.N_USERS
+    p_max: float = project_config.P_MAX
+    noise_power: float = project_config.NOISE_POWER
+    lambda_power: float = project_config.LAMBDA_POWER
+    episode_length: int = project_config.EPISODE_LENGTH
+    total_timesteps: int = project_config.TRAINING_TIMESTEPS
+    learning_rate: float = project_config.LEARNING_RATE
+    seed: int = project_config.RANDOM_SEED
 
-    n_users: int = 4
-    p_max: float = 1.0
-    noise_power: float = 1e-2
-    lambda_power: float = 0.1
-    episode_length: int = 400
-    total_timesteps: int = 20_000
-    seed: int = 42
-
-    # Replay buffer parameters:
-    # - buffer_size controls memory of past transitions.
-    # - learning_starts delays updates until enough experience is collected.
-    # - batch_size controls sample size per gradient step.
     buffer_size: int = 80_000
     learning_starts: int = 500
     batch_size: int = 128
-
-    # Update schedule:
-    # - train_freq_steps defines how often to trigger optimization.
-    # - gradient_steps defines how many updates to run when training triggers.
     train_freq_steps: int = 4
     gradient_steps: int = 1
 
-    # Two-layer MLP width for actor and critic.
     hidden_size: int = 128
     verbose: int = 0
     device: str = "auto"
     cpu_threads: int = 1
     report_steps: int = 800
-    model_path: str = "ddpg_power_control_model"
-    training_curve_path: str = "training_reward_curve.png"
-    rewards_path: str = "training_episode_rewards.npy"
+
+    model_path: str = project_config.MODEL_NAME
+    deploy_model_path: str = project_config.DEPLOY_MODEL_NAME
+
+    training_curve_path: Path = field(
+        default_factory=lambda: project_config.results_path(
+            project_config.TRAINING_CURVE_FILENAME
+        )
+    )
+    rewards_path: Path = field(
+        default_factory=lambda: project_config.results_path(
+            project_config.TRAINING_REWARDS_FILENAME
+        )
+    )
+
+    legacy_training_curve_path: Path = field(
+        default_factory=lambda: project_config.legacy_path(
+            project_config.TRAINING_CURVE_FILENAME
+        )
+    )
+    legacy_rewards_path: Path = field(
+        default_factory=lambda: project_config.legacy_path(
+            project_config.TRAINING_REWARDS_FILENAME
+        )
+    )
 
 
-def plot_training_rewards(episode_rewards: list[float], output_path: str) -> None:
-    """
-    Plot and save the convergence curve of episodic training rewards.
+def setup_logging(log_level: str) -> None:
+    """Configure project logging."""
+    level = getattr(logging, log_level.upper(), logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
 
-    The raw curve may be noisy due to fading randomness and exploration noise,
-    so we additionally plot a moving-average trend.
-    """
+
+def set_random_seeds(seed: int) -> None:
+    """Set NumPy and PyTorch random seeds for reproducibility."""
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def copy_if_needed(source: Path, destination: Path) -> None:
+    """Copy source to destination only when paths differ."""
+    source = source.resolve()
+    destination = destination.resolve()
+    if source == destination:
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+
+
+def plot_training_rewards(episode_rewards: list[float], output_path: Path) -> None:
+    """Plot episodic reward convergence with moving-average smoothing."""
     if not episode_rewards:
+        LOGGER.warning("No episode rewards recorded. Skipping reward plot.")
         return
 
     episodes = np.arange(1, len(episode_rewards) + 1)
     window = min(20, len(episode_rewards))
-    smooth = np.convolve(
-        np.array(episode_rewards), np.ones(window) / window, mode="valid"
-    )
+    smooth = np.convolve(np.array(episode_rewards), np.ones(window) / window, mode="valid")
 
-    plt.figure(figsize=(8, 5))
-    plt.plot(episodes, episode_rewards, alpha=0.35, label="Episode reward")
-    plt.plot(
+    plt.style.use("seaborn-v0_8-whitegrid")
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(episodes, episode_rewards, alpha=0.35, label="Episode reward", color="#4C72B0")
+    ax.plot(
         np.arange(window, len(episode_rewards) + 1),
         smooth,
         linewidth=2.0,
         label=f"Moving average ({window})",
+        color="#C44E52",
     )
-    plt.xlabel("Episode")
-    plt.ylabel("Cumulative reward")
-    plt.title("DDPG Training Reward Convergence")
-    plt.grid(alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300)
-    plt.close()
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Cumulative reward")
+    ax.set_title("DDPG Training Reward Convergence")
+    ax.legend()
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
+
+
+def save_training_artifacts(episode_rewards: list[float], config: TrainConfig) -> None:
+    """Persist training artifacts under results/ and legacy root paths."""
+    rewards_array = np.array(episode_rewards, dtype=np.float32)
+
+    config.rewards_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(config.rewards_path, rewards_array)
+    copy_if_needed(config.rewards_path, config.legacy_rewards_path)
+
+    plot_training_rewards(episode_rewards, config.training_curve_path)
+    if config.training_curve_path.exists():
+        copy_if_needed(config.training_curve_path, config.legacy_training_curve_path)
+    else:
+        LOGGER.warning(
+            "Training curve file was not generated (likely no completed episodes): %s",
+            config.training_curve_path,
+        )
 
 
 def train_ddpg(config: TrainConfig) -> tuple[DDPG, list[float]]:
-    """
-    Build environment and train DDPG with the configured hyperparameters.
+    """Create the environment, train DDPG, and save model artifacts."""
+    set_random_seeds(config.seed)
 
-    Notes on DDPG mechanics used by Stable-Baselines3:
-    - Replay buffer:
-      transitions (s, a, r, s') are stored up to buffer_size and sampled
-      uniformly for off-policy learning.
-    - Target networks:
-      SB3 maintains target actor/critic and performs Polyak averaging with
-      coefficient tau (set below) to stabilize bootstrapped Q-updates.
-    - Exploration:
-      Gaussian action noise is added to actor outputs during training.
-    """
-    # For this compact network/problem, one CPU thread is usually faster.
     if config.cpu_threads > 0:
         torch.set_num_threads(config.cpu_threads)
 
@@ -127,30 +165,24 @@ def train_ddpg(config: TrainConfig) -> tuple[DDPG, list[float]]:
         detailed_info=False,
         seed=config.seed,
     )
-    # Monitor records episodic returns and lengths for diagnostics.
-    env = Monitor(env)
+    monitored_env = Monitor(env)
 
-    action_dim = env.action_space.shape[0]
+    action_dim = monitored_env.action_space.shape[0]
     action_noise = NormalActionNoise(
         mean=np.zeros(action_dim, dtype=np.float32),
-        # Exploration scale: 10% of maximum power per action dimension.
         sigma=(0.1 * np.ones(action_dim, dtype=np.float32) * config.p_max),
     )
 
     model = DDPG(
         policy="MlpPolicy",
-        env=env,
-        # Actor and critic are MLPs with this shared architecture template.
+        env=monitored_env,
         policy_kwargs={"net_arch": [config.hidden_size, config.hidden_size]},
-        learning_rate=1e-3,
-        # Replay buffer and sampling controls:
+        learning_rate=config.learning_rate,
         buffer_size=config.buffer_size,
         learning_starts=config.learning_starts,
         batch_size=config.batch_size,
-        # Target network update rate (Polyak averaging coefficient).
         tau=0.005,
         gamma=0.99,
-        # Optimization schedule:
         train_freq=(config.train_freq_steps, "step"),
         gradient_steps=config.gradient_steps,
         action_noise=action_noise,
@@ -159,25 +191,20 @@ def train_ddpg(config: TrainConfig) -> tuple[DDPG, list[float]]:
         device=config.device,
     )
 
-    # The internal training loop alternates:
-    # collect step -> store in replay buffer -> (if due) sample batch -> update.
     model.learn(total_timesteps=config.total_timesteps, progress_bar=False)
+    episode_rewards = [float(x) for x in monitored_env.get_episode_rewards()]
 
-    # Episode rewards are extracted from Monitor for convergence plotting.
-    episode_rewards = [float(x) for x in env.get_episode_rewards()]
-
+    Path(config.model_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(config.deploy_model_path).parent.mkdir(parents=True, exist_ok=True)
     model.save(config.model_path)
-    np.save(config.rewards_path, np.array(episode_rewards, dtype=np.float32))
-    plot_training_rewards(episode_rewards, config.training_curve_path)
+    model.save(config.deploy_model_path)
+
+    save_training_artifacts(episode_rewards, config)
     return model, episode_rewards
 
 
 def quick_policy_report(model: DDPG, config: TrainConfig, n_eval_steps: int) -> None:
-    """
-    Compute a lightweight post-training report on unseen channel realizations.
-
-    This is a fast sanity-check report (not a full benchmark script).
-    """
+    """Run a fast deterministic sanity-check report after training."""
     env = UplinkPowerControlEnv(
         n_users=config.n_users,
         p_max=config.p_max,
@@ -195,7 +222,6 @@ def quick_policy_report(model: DDPG, config: TrainConfig, n_eval_steps: int) -> 
     rewards: list[float] = []
 
     for _ in range(n_eval_steps):
-        # Deterministic action removes exploration noise during reporting.
         action, _ = model.predict(obs, deterministic=True)
         obs, reward, terminated, truncated, info = env.step(action)
         rewards.append(float(reward))
@@ -205,63 +231,60 @@ def quick_policy_report(model: DDPG, config: TrainConfig, n_eval_steps: int) -> 
         if terminated or truncated:
             obs, _ = env.reset()
 
-    print("\nFinal learned DDPG policy performance (quick report):")
-    print(f"  Average reward      : {np.mean(rewards):.4f}")
-    print(f"  Average sum rate    : {np.mean(sum_rates):.4f}")
-    print(f"  Average total power : {np.mean(total_powers):.4f}")
-    print(f"  Average fairness    : {np.mean(fairness_values):.4f}")
+    LOGGER.info("Final learned DDPG policy performance (quick report):")
+    LOGGER.info("  Average reward      : %.4f", float(np.mean(rewards)))
+    LOGGER.info("  Average sum rate    : %.4f", float(np.mean(sum_rates)))
+    LOGGER.info("  Average total power : %.4f", float(np.mean(total_powers)))
+    LOGGER.info("  Average fairness    : %.4f", float(np.mean(fairness_values)))
 
 
 def parse_args() -> argparse.Namespace:
-    """
-    Parse command-line arguments for convenient experiment control.
-    """
+    """Parse CLI arguments for configurable training."""
     parser = argparse.ArgumentParser(description="Train DDPG for uplink power control.")
     parser.add_argument(
         "--mode",
         choices=["quick", "fast", "balanced", "full"],
         default="balanced",
-        help="quick/fast: fastest, balanced: speed-quality tradeoff, full: 50k steps.",
+        help="Preset for speed/quality trade-off.",
     )
-    parser.add_argument(
-        "--timesteps",
-        type=int,
-        default=None,
-        help="Override total training timesteps.",
-    )
+    parser.add_argument("--users", type=int, default=None, help="Number of uplink users (3-5).")
+    parser.add_argument("--timesteps", type=int, default=None, help="Total training timesteps.")
+    parser.add_argument("--learning-rate", type=float, default=None, help="DDPG learning rate.")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed.")
+    parser.add_argument("--p-max", type=float, default=None, help="Maximum power per user.")
+    parser.add_argument("--noise-power", type=float, default=None, help="AWGN noise power.")
+    parser.add_argument("--lambda-power", type=float, default=None, help="Power penalty coefficient.")
+    parser.add_argument("--episode-length", type=int, default=None, help="Episode horizon.")
     parser.add_argument(
         "--device",
         choices=["auto", "cpu", "cuda"],
         default="auto",
-        help="Torch device for DDPG.",
+        help="Torch device.",
     )
     parser.add_argument(
         "--cpu-threads",
         type=int,
         default=1,
-        help="Torch CPU threads (1 is often fastest for this small model).",
+        help="Torch CPU threads (1 is often fastest for this problem size).",
     )
     parser.add_argument(
         "--eval-steps",
         type=int,
         default=None,
-        help="Override number of steps used in final quick policy report.",
+        help="Override quick-report evaluation steps.",
     )
+    parser.add_argument("--skip-report", action="store_true", help="Skip post-training quick report.")
     parser.add_argument(
-        "--skip-report",
-        action="store_true",
-        help="Skip final policy report to reduce runtime.",
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default="INFO",
+        help="Logging verbosity.",
     )
     return parser.parse_args()
 
 
 def apply_mode_preset(cfg: TrainConfig, mode: str) -> None:
-    """
-    Apply predefined training presets.
-
-    Presets alter timesteps and optimization intensity while preserving
-    the same environment and algorithmic structure.
-    """
+    """Apply predefined training presets."""
     if mode in ("quick", "fast"):
         cfg.total_timesteps = 8_000
         cfg.episode_length = 300
@@ -274,8 +297,8 @@ def apply_mode_preset(cfg: TrainConfig, mode: str) -> None:
         cfg.verbose = 0
         cfg.report_steps = 400
     elif mode == "balanced":
-        cfg.total_timesteps = 20_000
-        cfg.episode_length = 400
+        cfg.total_timesteps = project_config.TRAINING_TIMESTEPS
+        cfg.episode_length = project_config.EPISODE_LENGTH
         cfg.buffer_size = 80_000
         cfg.learning_starts = 500
         cfg.batch_size = 128
@@ -299,25 +322,62 @@ def apply_mode_preset(cfg: TrainConfig, mode: str) -> None:
         raise ValueError(f"Unknown mode: {mode}")
 
 
-if __name__ == "__main__":
-    args = parse_args()
-    cfg = TrainConfig()
-    apply_mode_preset(cfg, args.mode)
+def apply_cli_overrides(cfg: TrainConfig, args: argparse.Namespace) -> None:
+    """Override config defaults from command-line arguments."""
+    if args.users is not None:
+        cfg.n_users = int(args.users)
+    if args.timesteps is not None:
+        cfg.total_timesteps = int(args.timesteps)
+    if args.learning_rate is not None:
+        cfg.learning_rate = float(args.learning_rate)
+    if args.seed is not None:
+        cfg.seed = int(args.seed)
+    if args.p_max is not None:
+        cfg.p_max = float(args.p_max)
+    if args.noise_power is not None:
+        cfg.noise_power = float(args.noise_power)
+    if args.lambda_power is not None:
+        cfg.lambda_power = float(args.lambda_power)
+    if args.episode_length is not None:
+        cfg.episode_length = int(args.episode_length)
+    if args.eval_steps is not None:
+        cfg.report_steps = int(args.eval_steps)
+
     cfg.device = args.device
     cfg.cpu_threads = max(1, int(args.cpu_threads))
 
-    if args.timesteps is not None:
-        cfg.total_timesteps = int(args.timesteps)
 
-    if args.eval_steps is not None:
-        cfg.report_steps = int(args.eval_steps)
+def main() -> None:
+    """Entry point for DDPG training."""
+    args = parse_args()
+    setup_logging(args.log_level)
+
+    cfg = TrainConfig()
+    apply_mode_preset(cfg, args.mode)
+    apply_cli_overrides(cfg, args)
+
+    LOGGER.info(
+        "Training config | users=%d timesteps=%d lr=%.5f seed=%d",
+        cfg.n_users,
+        cfg.total_timesteps,
+        cfg.learning_rate,
+        cfg.seed,
+    )
 
     start = time.perf_counter()
     trained_model, episodic_rewards = train_ddpg(cfg)
     elapsed = time.perf_counter() - start
-    print(f"\nTraining complete. Episodes recorded: {len(episodic_rewards)}")
-    print(f"Training time (s): {elapsed:.2f}")
-    print(f"Saved model: {os.path.abspath(cfg.model_path)}.zip")
-    print(f"Saved training curve: {os.path.abspath(cfg.training_curve_path)}")
+
+    LOGGER.info("Training complete. Episodes recorded: %d", len(episodic_rewards))
+    LOGGER.info("Training time (s): %.2f", elapsed)
+    LOGGER.info("Saved model: %s", Path(f"{cfg.model_path}.zip").resolve())
+    LOGGER.info("Saved deploy model: %s", Path(f"{cfg.deploy_model_path}.zip").resolve())
+    LOGGER.info("Saved training curve: %s", cfg.training_curve_path.resolve())
+    LOGGER.info("Saved reward history: %s", cfg.rewards_path.resolve())
+
     if not args.skip_report:
         quick_policy_report(trained_model, cfg, n_eval_steps=cfg.report_steps)
+
+
+if __name__ == "__main__":
+    main()

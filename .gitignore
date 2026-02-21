@@ -1,11 +1,15 @@
-# Python bytecode/cache
+# ------------------------------
+# Python
+# ------------------------------
 __pycache__/
 *.py[cod]
 *$py.class
-
-# Build/distribution artifacts
+*.so
+.Python
 build/
 dist/
+site/
+*.egg
 *.egg-info/
 .eggs/
 pip-wheel-metadata/
@@ -16,11 +20,48 @@ venv/
 env/
 ENV/
 .python-version
+
+# ------------------------------
+# Jupyter / Colab
+# ------------------------------
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+
+# ------------------------------
+# Environment / secrets
+# ------------------------------
 .env
 .env.*
 !.env.example
 
-# Test/tool caches
+# ------------------------------
+# Logs and experiment outputs
+# ------------------------------
+logs/
+*.log
+runs/
+tb_logs/
+results/
+models/
+checkpoints/
+
+# Root-level generated artifacts
+ddpg_power_control_model.zip
+trained_ddpg_model.zip
+training_episode_rewards.npy
+training_reward_curve.png
+training_reward_vs_timesteps.png
+sum_rate_comparison.png
+power_usage_comparison.png
+fairness_comparison.png
+power_efficiency_comparison.png
+user_rate_cdf.png
+evaluation_summary.csv
+artifacts/
+
+# ------------------------------
+# Testing / type-check / lint cache
+# ------------------------------
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -28,32 +69,13 @@ ENV/
 .coverage
 .coverage.*
 htmlcov/
-.ipynb_checkpoints/
 
-# IDE/editor files
+# ------------------------------
+# OS / editor
+# ------------------------------
+.DS_Store
+Thumbs.db
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Project-generated outputs (reproducible artifacts)
-ddpg_power_control_model.zip
-ddpg_power_control_model/
-training_episode_rewards.npy
-training_reward_curve.png
-sum_rate_comparison.png
-power_efficiency_comparison.png
-*.log
-
-# RL experiment artifacts
-checkpoints/
-models/
-logs/
-runs/
-tb_logs/
-*.monitor.csv
-*.monitor.json
