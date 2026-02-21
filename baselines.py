@@ -24,6 +24,7 @@ def equal_power_allocation(n_users: int, p_max: float) -> np.ndarray:
     - Often achieves reasonable throughput in symmetric settings.
     - Usually ignores fairness-through-interference tradeoffs.
     """
+    # Every user gets identical power; no channel-awareness is used.
     return np.full(shape=(n_users,), fill_value=p_max, dtype=np.float32)
 
 
@@ -45,7 +46,9 @@ def fractional_power_control(
     3) Scale by p_max and clip for numerical safety.
     """
     gains = np.asarray(gains, dtype=np.float64)
+    # Inverse-gain weighting compensates weaker channels.
     inv_term = np.power(gains + 1e-12, -alpha)
+    # Normalize to keep relative profile while respecting [0, p_max] scale.
     inv_term = inv_term / (np.max(inv_term) + 1e-12)
     powers = p_max * inv_term
     return np.clip(powers, 0.0, p_max).astype(np.float32)
@@ -66,7 +69,9 @@ def greedy_sinr_allocation(gains: np.ndarray, p_max: float) -> np.ndarray:
     """
     gains = np.asarray(gains, dtype=np.float64)
     n_users = gains.size
+    # Start with small residual powers for all users.
     powers = np.full(n_users, 0.05 * p_max, dtype=np.float64)
+    # Allocate full power to the strongest user to maximize immediate gain.
     best_user = int(np.argmax(gains))
     powers[best_user] = p_max
     return np.clip(powers, 0.0, p_max).astype(np.float32)
@@ -95,8 +100,10 @@ def evaluate_static_policy_on_channels(
     total_powers: list[float] = []
     fairness_values: list[float] = []
 
+    # Evaluate each channel realization independently and accumulate statistics.
     for gains in channel_gains:
         n_users = gains.size
+        # Dispatch to the requested rule-based policy.
         if policy_name == "equal":
             powers = equal_power_allocation(n_users=n_users, p_max=p_max)
         elif policy_name == "fractional":
@@ -114,6 +121,7 @@ def evaluate_static_policy_on_channels(
         total_powers.append(float(np.sum(powers)))
         fairness_values.append(jain_fairness(rates))
 
+    # Reduce step-wise metrics into one summary dictionary.
     avg_sum_rate = float(np.mean(sum_rates))
     avg_total_power = float(np.mean(total_powers))
     avg_fairness = float(np.mean(fairness_values))

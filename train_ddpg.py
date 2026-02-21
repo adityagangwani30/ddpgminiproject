@@ -1,4 +1,11 @@
-"""Train a DDPG agent for adaptive uplink transmit power control."""
+"""Train a DDPG agent for adaptive uplink transmit power control.
+
+This script orchestrates end-to-end learning:
+1) Build the custom wireless environment.
+2) Configure DDPG (actor, critic, replay buffer, target networks, exploration).
+3) Run training and save model artifacts.
+4) Produce reward diagnostics and optional quick evaluation.
+"""
 
 from __future__ import annotations
 
@@ -47,6 +54,7 @@ class TrainConfig:
     cpu_threads: int = 1
     report_steps: int = 800
 
+    # Primary and deployment-oriented model names.
     model_path: str = project_config.MODEL_NAME
     deploy_model_path: str = project_config.DEPLOY_MODEL_NAME
 
@@ -84,6 +92,7 @@ def setup_logging(log_level: str) -> None:
 
 def set_random_seeds(seed: int) -> None:
     """Set NumPy and PyTorch random seeds for reproducibility."""
+    # Seeds are set in one place so train/eval runs are easier to reproduce.
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -108,6 +117,7 @@ def plot_training_rewards(episode_rewards: list[float], output_path: Path) -> No
 
     episodes = np.arange(1, len(episode_rewards) + 1)
     window = min(20, len(episode_rewards))
+    # Moving average helps visualize trend under noisy episodic returns.
     smooth = np.convolve(np.array(episode_rewards), np.ones(window) / window, mode="valid")
 
     plt.style.use("seaborn-v0_8-whitegrid")
@@ -137,6 +147,7 @@ def save_training_artifacts(episode_rewards: list[float], config: TrainConfig) -
 
     config.rewards_path.parent.mkdir(parents=True, exist_ok=True)
     np.save(config.rewards_path, rewards_array)
+    # Keep root-level copies for older workflows that expect legacy paths.
     copy_if_needed(config.rewards_path, config.legacy_rewards_path)
 
     plot_training_rewards(episode_rewards, config.training_curve_path)
@@ -165,24 +176,38 @@ def train_ddpg(config: TrainConfig) -> tuple[DDPG, list[float]]:
         detailed_info=False,
         seed=config.seed,
     )
+    # Monitor records episodic reward/length metadata for diagnostics.
     monitored_env = Monitor(env)
 
     action_dim = monitored_env.action_space.shape[0]
+    # Exploration process:
+    # DDPG policy is deterministic, so Gaussian action noise is injected during
+    # training to explore nearby continuous actions in power space.
     action_noise = NormalActionNoise(
         mean=np.zeros(action_dim, dtype=np.float32),
+        # Exploration noise scale is proportional to maximum power.
         sigma=(0.1 * np.ones(action_dim, dtype=np.float32) * config.p_max),
     )
 
+    # DDPG internals configured here:
+    # - policy="MlpPolicy": actor and critic are neural MLPs.
+    # - buffer_size/learning_starts/batch_size: replay buffer behavior.
+    # - tau: target-network soft update coefficient.
+    # - train_freq + gradient_steps: update cadence.
     model = DDPG(
         policy="MlpPolicy",
         env=monitored_env,
+        # Same hidden-layer template for actor/critic network backbones.
         policy_kwargs={"net_arch": [config.hidden_size, config.hidden_size]},
         learning_rate=config.learning_rate,
+        # Replay buffer controls off-policy sample reuse.
         buffer_size=config.buffer_size,
         learning_starts=config.learning_starts,
         batch_size=config.batch_size,
+        # Target-network smoothing for critic/actor stability.
         tau=0.005,
         gamma=0.99,
+        # How often training updates occur relative to data collection.
         train_freq=(config.train_freq_steps, "step"),
         gradient_steps=config.gradient_steps,
         action_noise=action_noise,
@@ -191,7 +216,12 @@ def train_ddpg(config: TrainConfig) -> tuple[DDPG, list[float]]:
         device=config.device,
     )
 
+    # SB3 training loop (conceptually):
+    # collect transition -> store in replay buffer -> sample mini-batch ->
+    # update critic (TD target) -> update actor (policy gradient via critic) ->
+    # soft-update target networks.
     model.learn(total_timesteps=config.total_timesteps, progress_bar=False)
+    # Pull episodic rewards from monitor wrapper for plotting/reporting.
     episode_rewards = [float(x) for x in monitored_env.get_episode_rewards()]
 
     Path(config.model_path).parent.mkdir(parents=True, exist_ok=True)
@@ -221,6 +251,7 @@ def quick_policy_report(model: DDPG, config: TrainConfig, n_eval_steps: int) -> 
     fairness_values: list[float] = []
     rewards: list[float] = []
 
+    # Deterministic actions evaluate the learned policy without exploration noise.
     for _ in range(n_eval_steps):
         action, _ = model.predict(obs, deterministic=True)
         obs, reward, terminated, truncated, info = env.step(action)
@@ -353,6 +384,7 @@ def main() -> None:
     setup_logging(args.log_level)
 
     cfg = TrainConfig()
+    # Preset first, then allow explicit CLI flags to override final values.
     apply_mode_preset(cfg, args.mode)
     apply_cli_overrides(cfg, args)
 

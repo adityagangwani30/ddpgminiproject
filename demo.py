@@ -1,4 +1,10 @@
-"""Live inference demo for DDPG adaptive power allocation."""
+"""Live inference demo for DDPG adaptive power allocation.
+
+Purpose:
+- Load a trained policy checkpoint.
+- Run deterministic inference in the wireless environment.
+- Visualize, in real time, how power allocation responds to channel changes.
+"""
 
 from __future__ import annotations
 
@@ -87,6 +93,7 @@ def run_live_demo(model: DDPG, env: UplinkPowerControlEnv, steps: int, pause: fl
     plt.ion()
     fig, (ax_gain, ax_power) = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
 
+    # Initial deterministic action seeds the first frame before loop updates.
     initial_action, _ = model.predict(obs, deterministic=True)
     initial_power = np.clip(np.asarray(initial_action, dtype=np.float32), 0.0, env.p_max)
 
@@ -98,10 +105,13 @@ def run_live_demo(model: DDPG, env: UplinkPowerControlEnv, steps: int, pause: fl
     ax_power.set_xlabel("User index")
     ax_power.set_ylim(0.0, max(env.p_max * 1.1, 1e-3))
 
+    # Frame-by-frame inference loop for live adaptation visualization.
     for step_idx in range(1, steps + 1):
+        # Deterministic inference shows the learned policy behavior directly.
         action, _ = model.predict(obs, deterministic=True)
         obs_next, reward, terminated, truncated, info = env.step(action)
 
+        # Use detailed info from env when available; fallback values keep demo robust.
         gains = np.asarray(info.get("gains", obs), dtype=np.float32)
         powers = np.asarray(
             info.get("powers", np.clip(action, 0.0, env.p_max)),
@@ -117,15 +127,18 @@ def run_live_demo(model: DDPG, env: UplinkPowerControlEnv, steps: int, pause: fl
         ax_gain.set_title(
             f"Channel Gains (Step {step_idx}) | Sum Rate: {info['sum_rate']:.3f}"
         )
+        # Reward and fairness are displayed to connect actions with performance.
         ax_power.set_title(
             f"DDPG Power Allocation | Reward: {reward:.3f} | Fairness: {info['fairness']:.3f}"
         )
 
         fig.canvas.draw_idle()
+        # Small pause yields real-time animation effect.
         plt.pause(pause)
 
         obs = obs_next
         if terminated or truncated:
+            # Restart episode to keep demo running for requested number of steps.
             obs, _ = env.reset()
 
     plt.ioff()

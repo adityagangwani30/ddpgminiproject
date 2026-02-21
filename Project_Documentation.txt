@@ -11,11 +11,11 @@ Project Title
 DDPG Based Adaptive Transmit Power Control in a Single-Cell Wireless Network
 
 Brief Description
-This project implements a centralized uplink power-control framework in which a
-Deep Deterministic Policy Gradient (DDPG) agent learns continuous transmit-power
-allocation for multiple users in a single-cell wireless network. The objective
-is to maximize spectral efficiency while penalizing excess transmit power,
-thereby learning a throughput-energy tradeoff policy under fast channel fading.
+This project implements a centralized uplink power-control framework where a
+Deep Deterministic Policy Gradient (DDPG) agent learns continuous transmit
+power allocation for multiple users in a single-cell wireless network. The
+controller maximizes spectral efficiency while penalizing excess power usage,
+thus learning a practical throughput-energy tradeoff under fading channels.
 
 Tools Used
 - Python
@@ -24,406 +24,313 @@ Tools Used
 - Matplotlib
 - Gymnasium
 - PyTorch
+- Pandas (for result table export)
 
 =====================================================================
 2. INTRODUCTION
 =====================================================================
 
-Transmit-power control is a core optimization problem in wireless networks.
-In a shared uplink channel, each user transmits over a fading link, and the
-received signal from one user acts as interference for others. If all users
-transmit at maximum power, interference increases significantly and can reduce
-overall link quality and energy efficiency. If all users transmit conservatively,
-interference decreases but throughput can be unnecessarily limited.
+Transmit-power control is a core wireless optimization problem. In the uplink,
+simultaneous transmissions from multiple users create mutual interference. If
+all users transmit at full power, interference can dominate and reduce overall
+link quality and energy efficiency. If all users transmit conservatively,
+interference decreases but throughput may be underutilized.
 
-The power-control problem therefore requires balancing conflicting objectives:
-1) maximize total throughput,
-2) control aggregate energy usage,
-3) maintain acceptable fairness among users.
+Therefore, the practical goal is to balance three competing dimensions:
+1) aggregate throughput,
+2) transmit-energy consumption,
+3) service fairness across users.
 
-Adaptive power control is important because wireless channels vary over time due
-to multipath fading, mobility, and environmental changes. A static rule such as
-constant full power is simple but cannot react to real-time channel quality.
-A channel-aware controller can exploit favorable channel states and avoid wasting
-power in unfavorable states, improving long-term network efficiency.
+Adaptive power control is necessary because wireless channels vary over time
+due to fading and environment dynamics. A static heuristic cannot react to each
+instantaneous channel realization, while an adaptive policy can exploit good
+channels and avoid unnecessary power in poor channels.
 
-Reinforcement learning (RL) is suitable because the decision process is
-sequential, stochastic, and continuous. The controller repeatedly observes
-channel states, selects continuous transmit powers, receives a reward, and
-adapts behavior from experience. DDPG is an appropriate RL method here because:
-- the action space is continuous (power vector),
-- deterministic actor outputs are efficient at inference time,
-- off-policy learning and replay buffer improve sample reuse,
-- target networks stabilize training in noisy environments.
+Reinforcement learning is a suitable approach because the control space is
+continuous, the environment is stochastic, and decision quality must be learned
+from interaction rather than explicit closed-form labels.
 
 =====================================================================
 3. SYSTEM MODEL
 =====================================================================
 
-3.1 Network Scenario
-The implemented environment models a single-cell uplink system with one base
-station and K users, where K is constrained to 3 <= K <= 5. At each time slot,
-the base station receives simultaneous transmissions from all users and computes
-per-user SINR and rate from the selected powers and current channel gains.
+3.1 Scenario
+The system models one base station and K single-antenna uplink users. The
+implementation constrains K to 3 <= K <= 5.
 
-3.2 Channel Model (Rayleigh Fading)
-For user i, the complex fading coefficient is modeled as:
+3.2 Channel Model
+Per-user channel coefficients follow Rayleigh fading:
 
 h_i ~ CN(0, 1)
 
-Therefore, channel power gains are:
+Equivalent channel gain form:
 
 g_i = |h_i|^2
 
-Under this model, g_i follows an exponential distribution with unit mean.
-In `environment.py`, gains are sampled directly from Exp(1), which is
-mathematically equivalent and computationally efficient.
+In the code, gains are sampled directly from Exp(1), which is mathematically
+equivalent to |h_i|^2 under h_i ~ CN(0,1).
 
-3.3 Uplink SINR Model
-With transmit power P_i and channel gain g_i, the received useful power for
-user i is P_i * g_i. Interference is the sum of all other users' received
-powers. The implemented SINR equation is:
+3.3 SINR
+For user i, the implemented uplink SINR is:
 
 SINR_i = (P_i * g_i) / (sum_{j != i} P_j * g_j + sigma^2)
 
-where sigma^2 is the AWGN noise power (`noise_power` in code).
+where:
+- P_i is transmit power of user i,
+- sigma^2 is AWGN noise power.
 
-3.4 Spectral Efficiency Model
-Per-user spectral efficiency is computed using Shannon-style mapping:
+3.4 Spectral Efficiency
+Per-user spectral efficiency is:
 
 R_i = log2(1 + SINR_i)
 
-The system sum rate per slot is:
+System sum rate:
 
 R_sum = sum_{i=1..K} R_i
 
-3.5 Reward Function Formulation
-The RL reward used by the environment is:
+3.5 Reward Function
+The RL reward at time t is:
 
 r_t = sum_{i=1..K} log2(1 + SINR_i,t) - lambda_power * sum_{i=1..K} P_i,t
 
 Interpretation:
-- First term rewards high aggregate throughput.
-- Second term penalizes high total transmit power.
-- `lambda_power` controls throughput-versus-energy tradeoff.
+- First term encourages high throughput.
+- Second term penalizes excessive transmit power.
+- lambda_power controls the throughput-energy tradeoff.
 
-3.6 Power Constraints and Feasibility
-Each user power is constrained as:
+3.6 Power Constraints
+Each power component is bounded:
 
 0 <= P_i <= P_max
 
-In code, actions are clipped to this interval at every step. This guarantees
-feasible physical control even when exploration noise or actor output produces
-out-of-bound values.
+The environment clips actions to this feasible interval every step.
 
 3.7 Fairness Metric
-The evaluation also reports Jain's fairness index over per-user rates:
+Jain fairness index is used on per-user rates:
 
 J = (sum_i R_i)^2 / (K * sum_i R_i^2)
 
-J approaches 1 when users obtain similar rates and decreases when rates are
-highly imbalanced.
+Values close to 1 indicate balanced user rates.
 
 =====================================================================
 4. REINFORCEMENT LEARNING FORMULATION
 =====================================================================
 
-The project formulates uplink power allocation as a continuous-action Markov
-Decision Process (MDP).
+The power-control problem is formulated as a continuous-action MDP.
 
 4.1 Agent
-The agent is a centralized controller located at the base station. It observes
-network channel conditions and outputs simultaneous power decisions for all
-uplink users.
+Centralized base-station controller.
 
-4.2 State Space
-State at time t is the channel-gain vector:
-
+4.2 State
 s_t = [g_1,t, g_2,t, ..., g_K,t]
 
-where g_i,t = |h_i,t|^2 and each component is non-negative.
+where g_i,t = |h_i,t|^2.
 
-4.3 Action Space
-Action at time t is a continuous vector of transmit powers:
-
+4.3 Action
 a_t = [P_1,t, P_2,t, ..., P_K,t]
 
-with element-wise bounds [0, P_max].
+continuous and clipped to [0, P_max].
 
 4.4 Reward
-The scalar reward is the throughput-power tradeoff defined in Section 3.5,
-implemented directly in the environment step function.
+r_t = sum_i R_i,t - lambda_power * sum_i P_i,t
 
-4.5 Transition and MDP Interpretation
-Given current state and action, reward is computed from current channels, then
-next-state channels are sampled from the fading distribution. Episodes terminate
-after a fixed horizon (`episode_length`), producing finite-horizon rollouts.
-
-Although channels are sampled independently slot-to-slot in this implementation,
-the decision process still fits an MDP framework because next-state generation
-and reward depend on current state/action and known stochastic dynamics.
+4.5 Transition
+After each action and reward computation, a new channel vector is sampled.
+Episodes terminate after fixed horizon `episode_length`.
 
 =====================================================================
 5. DDPG ALGORITHM EXPLANATION
 =====================================================================
 
-5.1 Why DDPG
-DDPG is designed for continuous control and is therefore a natural match for
-continuous transmit-power vectors. The implementation uses Stable-Baselines3
-DDPG with custom environment dynamics.
+5.1 Motivation
+DDPG is an off-policy actor-critic algorithm designed for continuous actions.
+This makes it appropriate for vector-valued transmit-power control.
 
-5.2 Actor Network Role
-The actor implements deterministic policy mu_theta(s). For a channel-gain state,
-it outputs a continuous action vector interpreted as per-user powers. In this
-project, actor and critic use MLP architectures with two hidden layers (default
-balanced mode: 128 and 128 units).
+5.2 Actor Network
+Approximates deterministic policy mu_theta(s) and outputs power actions.
 
-5.3 Critic Network Role
-The critic approximates action-value Q_phi(s, a), estimating expected discounted
-return when taking action a in state s and following actor policy thereafter.
-The critic guides actor improvement by providing gradients of Q with respect to
-action outputs.
+5.3 Critic Network
+Approximates Q_phi(s, a), evaluating expected return of state-action pairs.
 
 5.4 Replay Buffer
-DDPG stores transitions (s_t, a_t, r_t, s_{t+1}) in a replay buffer. During
-training, mini-batches are sampled uniformly from this buffer. This has two key
-effects:
-- reduces temporal correlation across updates,
-- improves sample efficiency by reusing past experiences.
-
-Configured parameters (balanced mode defaults):
-- `buffer_size = 80,000`
-- `learning_starts = 500`
-- `batch_size = 128`
+Transitions (s, a, r, s') are stored and sampled uniformly to:
+- break temporal correlations,
+- improve sample reuse efficiency.
 
 5.5 Target Networks
-DDPG maintains target actor and target critic networks for stable bootstrap
-updates. Target parameters are updated by Polyak averaging:
+Target actor and target critic are updated by Polyak averaging:
 
 theta_target <- tau * theta_online + (1 - tau) * theta_target
 
-with `tau = 0.005` in this project.
+This stabilizes bootstrapped Q-learning updates.
 
-5.6 Action Noise for Exploration
-During training, Gaussian action noise is added to actor outputs:
+5.6 Exploration
+Gaussian action noise is added during training:
 
-a_noisy = mu_theta(s) + epsilon,  epsilon ~ N(0, sigma^2 I)
+a_noisy = mu_theta(s) + epsilon, epsilon ~ N(0, sigma^2 I)
 
-Implementation uses `NormalActionNoise` with standard deviation equal to
-0.1 * P_max per action dimension. This helps explore alternative power vectors
-before policy convergence.
-
-5.7 Critic and Actor Updates
-For sampled transition batches, the critic target is:
+5.7 Update Principles
+Critic target:
 
 y = r + gamma * Q_target(s', mu_target(s'))
 
-Critic loss (mean squared TD error):
+Critic loss:
 
 L(phi) = E[(Q_phi(s, a) - y)^2]
 
-Actor objective maximizes critic-estimated value:
+Actor objective:
 
 J(theta) = E[Q_phi(s, mu_theta(s))]
 
-Deterministic policy gradient update direction:
-
-grad_theta J ~= E[ grad_a Q_phi(s, a) |_{a=mu_theta(s)} * grad_theta mu_theta(s) ]
-
-This gradient chain allows the actor to learn power actions that improve
-long-term reward under the throughput-power objective.
-
-5.8 Training Loop Process in `train_ddpg.py`
-The high-level loop managed by Stable-Baselines3 follows:
-1) observe current state,
-2) sample actor action with exploration noise,
-3) clip action in environment and execute step,
-4) store transition in replay buffer,
-5) periodically sample mini-batch and update critic/actor,
-6) softly update target networks,
-7) continue until total timesteps reached.
-
-Model checkpoints and diagnostics produced by training script:
-- `ddpg_power_control_model.zip`
-- `training_episode_rewards.npy`
-- `training_reward_curve.png`
+5.8 Training Loop (Implemented Behavior)
+1) Observe state.
+2) Predict action (with exploration noise during training).
+3) Step environment and collect transition.
+4) Store transition in replay buffer.
+5) Perform critic/actor gradient updates.
+6) Soft-update target networks.
+7) Continue until total_timesteps.
 
 =====================================================================
 6. CODE ARCHITECTURE EXPLANATION
 =====================================================================
 
-6.1 `environment.py`
+6.1 `config.py`
 Purpose:
-Defines the custom Gymnasium environment and core wireless-system calculations.
+Centralized configuration and artifact path definitions.
 
-Major components:
-- `compute_sinr_rates(gains, powers, noise_power)`:
-  computes per-user SINR and spectral efficiency for one uplink slot.
-- `jain_fairness(values)`:
-  computes Jain fairness index over non-negative vectors (typically rates).
-- `UplinkPowerControlEnv` class:
-  - `__init__`: configures users, power limits, noise, reward penalty,
-    episode length, and Gym spaces.
-  - `_sample_channel_gains`: samples Exp(1) gains equivalent to Rayleigh model.
-  - `reset`: initializes episode and first channel realization.
-  - `step`: clips actions, computes SINR/rates/reward/fairness, returns next
-    state sampled from independent block fading.
+Key content:
+- Default environment parameters (`N_USERS`, `P_MAX`, `NOISE_POWER`,
+  `LAMBDA_POWER`, `EPISODE_LENGTH`).
+- Training/evaluation defaults (`TRAINING_TIMESTEPS`, `LEARNING_RATE`,
+  `RANDOM_SEED`, `EVAL_STEPS`, `EVAL_RUNS`).
+- Artifact file names and helper path functions (`results_path`, `legacy_path`).
 
-Design note:
-Action clipping in `step` ensures all learned and exploratory actions remain
-physically feasible, improving robustness of training.
-
-6.2 `baselines.py`
+6.2 `environment.py`
 Purpose:
-Implements reference policies and a shared evaluation routine for fair
-comparison against DDPG.
+Custom Gymnasium environment implementing channel sampling, SINR/rate
+calculation, reward generation, fairness metric, and action clipping.
 
-Major components:
-- `equal_power_allocation(n_users, p_max)`:
-  all users transmit at full power.
-- `fractional_power_control(gains, p_max, alpha=0.5)`:
-  power inversely scaled with gain^alpha to compensate weaker channels.
-- `greedy_sinr_allocation(gains, p_max)`:
-  strongest user receives full power, others receive small residual power.
-- `evaluate_static_policy_on_channels(...)`:
-  evaluates one baseline over a fixed channel sequence and returns average
-  sum rate, average total power, average fairness, and power efficiency.
+Key functions/classes:
+- `compute_sinr_rates(...)`
+- `jain_fairness(...)`
+- `UplinkPowerControlEnv` with `reset()` and `step()`
 
-Design note:
-Using a common channel sequence for all methods avoids randomness bias in
-method-to-method comparisons.
-
-6.3 `train_ddpg.py`
+6.3 `baselines.py`
 Purpose:
-Defines training configuration, builds DDPG agent, runs learning, stores
-artifacts, and prints a quick post-training report.
+Non-learning baselines for reference comparison.
 
-Major components:
-- `TrainConfig` dataclass:
-  centralizes hyperparameters for reproducible experiment setup.
-- `plot_training_rewards(episode_rewards, output_path)`:
-  saves raw and moving-average reward convergence curve.
-- `train_ddpg(config)`:
-  creates environment, action noise, DDPG model, executes learning, and saves
-  model plus reward artifacts.
-- `quick_policy_report(model, config, n_eval_steps)`:
-  performs lightweight deterministic policy sanity check.
-- `parse_args()` and `apply_mode_preset(cfg, mode)`:
-  expose quick/fast/balanced/full presets and runtime options.
+Implemented baselines:
+- Equal power
+- Fractional power control
+- Greedy strongest-user rule
 
-Design note:
-Preset modes allow controlled speed-quality tradeoffs while preserving the same
-problem formulation and algorithmic core.
+Key function:
+- `evaluate_static_policy_on_channels(...)`
 
-6.4 `evaluation.py`
+6.4 `train_ddpg.py`
 Purpose:
-Loads trained model, evaluates DDPG and baselines on identical channels, and
-produces comparison plots.
+Train DDPG using Stable-Baselines3 and save artifacts.
 
-Major components:
-- `generate_channel_sequence(n_users, n_steps, seed)`:
-  generates deterministic evaluation channel dataset using complex Gaussian
-  sampling and conversion to |h|^2 gains.
-- `evaluate_ddpg_on_channels(model, channel_gains, p_max, noise_power)`:
-  applies deterministic actor outputs and computes aggregate metrics.
-- `plot_metric_bars(results)`:
-  saves `sum_rate_comparison.png` and `power_efficiency_comparison.png`.
-- `print_results(results)`:
-  prints compact metric summary per method.
+Key components:
+- `TrainConfig` dataclass
+- `train_ddpg(config)`
+- `plot_training_rewards(...)`
+- `quick_policy_report(...)`
+- CLI parsing with overrides (`--users`, `--timesteps`, etc.)
+- Logging-based runtime reporting
 
-Design note:
-Evaluation separates training from benchmarking and supports consistent,
-reproducible comparison across methods.
+6.5 `evaluation.py`
+Purpose:
+Evaluate trained DDPG vs baselines on shared channel sequences.
+
+Key features:
+- Professional results table in terminal.
+- Metrics: sum rate, total power, Jain fairness, power efficiency.
+- Multi-run averaging (`--runs`) for robust reporting.
+- CSV export (`evaluation_summary.csv`).
+- Plot generation:
+  - training_reward_vs_timesteps.png
+  - sum_rate_comparison.png
+  - power_usage_comparison.png
+  - fairness_comparison.png
+  - power_efficiency_comparison.png
+  - user_rate_cdf.png
+
+6.6 `demo.py`
+Purpose:
+Live inference visualization using a trained model.
+
+Behavior:
+- Loads model checkpoint.
+- Runs deterministic inference in environment.
+- Renders two real-time subplots:
+  - top: channel gains
+  - bottom: allocated powers
+- Updates with `plt.pause(0.1)` (default configurable).
 
 =====================================================================
 7. OUTPUT AND RESULTS INTERPRETATION
 =====================================================================
 
-7.1 Generated Outputs
-The project produces the following principal outputs:
-- `training_reward_curve.png`: episodic reward convergence visualization.
-- `sum_rate_comparison.png`: bar chart of average sum-rate by method.
-- `power_efficiency_comparison.png`: bar chart of sum-rate per total power.
-- console metrics in evaluation: average sum rate, average power, fairness,
-  and power efficiency.
+7.1 Main Outputs
+Typical generated outputs include:
+- `ddpg_power_control_model.zip`
+- `trained_ddpg_model.zip`
+- `training_episode_rewards.npy`
+- `results/training_reward_curve.png`
+- `results/training_reward_vs_timesteps.png`
+- `results/sum_rate_comparison.png`
+- `results/power_usage_comparison.png`
+- `results/fairness_comparison.png`
+- `results/power_efficiency_comparison.png`
+- `results/user_rate_cdf.png`
+- `results/evaluation_summary.csv`
 
-7.2 Training Convergence Curve
-Interpretation principle:
-- Early training: larger reward variance is expected due to exploration noise
-  and stochastic fading.
-- Mid-to-late training: moving-average reward should increase and eventually
-  flatten, indicating stabilization of learned policy behavior.
-- Persistent oscillation without trend: may indicate insufficient timesteps,
-  overly strong exploration noise, or unstable hyperparameters.
+7.2 Training Convergence
+The reward-vs-episode and reward-vs-timestep plots indicate whether policy
+learning stabilizes. A rising moving-average trend followed by plateau is
+typical of convergence to a stable operating policy.
 
-Current workspace note:
-The file training_episode_rewards.npy exists but currently contains zero episodes. This typically means no complete episodes were logged in the latest run, so convergence interpretation should rely on the generated training plot and fresh training logs in a new run.
+7.3 Cross-Method Comparison
+Evaluation compares DDPG against Equal/Fractional/Greedy baselines.
+Interpretation dimensions:
+- Sum rate: aggregate throughput.
+- Total power: average transmission cost.
+- Power efficiency: throughput per unit power.
+- Fairness: user-rate balance (Jain index).
 
-7.3 Quantitative Comparison (Current Workspace Snapshot)
-Method         | Avg Sum Rate | Avg Total Power | Jain Fairness | Power Efficiency
----------------+--------------+-----------------+---------------+-----------------
-DDPG           |       1.9080 |          2.0625 |        0.6093 |          0.9251
-Equal Power    |       1.9126 |          4.0000 |        0.6117 |          0.4781
-Fractional PC  |       1.7076 |          2.4180 |        0.8040 |          0.7062
-Greedy SINR    |       4.4176 |          1.1500 |        0.2590 |          3.8414
+7.4 Typical Tradeoff Interpretation
+- Greedy policies can produce very high sum rate but often poor fairness.
+- Equal power is simple but can be power-inefficient.
+- Fractional control may improve fairness but can reduce throughput.
+- DDPG tends to learn a reward-aligned tradeoff between throughput and power.
 
-7.4 Academic Interpretation of Metrics
-On the shared 10,000-channel test set, DDPG achieves approximately the same sum rate as Equal Power while using much less power. In numeric terms, DDPG uses about 48.4% less transmit power than Equal Power (2.0625 vs 4.0000) with nearly identical average sum rate (1.9080 vs 1.9126). This yields a power-efficiency improvement of about 93.5% over Equal Power and about 31.0% over Fractional PC. Greedy SINR attains the highest raw sum rate and efficiency in this snapshot because it concentrates resources on the strongest user at each slot; however, its fairness is much lower, which is consistent with its design. Therefore, DDPG should be interpreted as learning a more balanced operating point for the reward used in this project (throughput with explicit power penalty), rather than as a strict maximizer of pure sum rate under all criteria.
-
-Additional interpretation by metric:
-- Sum rate:
-  Measures total spectral efficiency. High values indicate stronger aggregate
-  throughput but do not guarantee fair user distribution.
-- Power efficiency:
-  Defined as average sum rate divided by average total power. It captures how
-  effectively transmit energy is converted into throughput.
-- Jain fairness index:
-  Captures equality of user rates. Higher fairness indicates more balanced user
-  service; lower fairness suggests rate concentration on a subset of users.
-
-Why DDPG performs better than baseline rules (objective-centric view):
-- DDPG learns state-dependent continuous policies that adapt to each channel
-  realization, unlike fixed heuristics.
-- It directly optimizes the defined reward, which includes both throughput and
-  power cost, so it can reduce unnecessary power while preserving rate.
-- Against non-learning baselines such as Equal Power and Fractional PC, DDPG
-  typically offers better reward-aligned efficiency due to learned adaptation.
-- A throughput-only aggressive baseline (Greedy SINR) may exceed DDPG in raw
-  sum rate, but this occurs with substantial fairness sacrifice and objective
-  mismatch relative to the project reward design.
-
-7.5 Convergence Behavior Meaning
-When convergence is observed (reward trend plateau with manageable variance), it
-indicates that actor and critic have reached a stable policy/value relationship
-for the chosen environment statistics and hyperparameters. This does not imply
-global optimality, but it indicates practical policy stabilization suitable for
-evaluation and comparison.
+7.5 Why Shared-Channel Evaluation Matters
+All methods are tested on the same channel sequences, which removes random
+channel luck and ensures differences are due to policy behavior.
 
 =====================================================================
 8. CONCLUSION
 =====================================================================
 
-This project successfully implements a DDPG-based adaptive transmit-power
-controller for a single-cell uplink wireless network with Rayleigh fading.
-The implementation includes:
-- a mathematically grounded custom environment,
-- continuous-action RL training with actor-critic learning,
-- reproducible baseline comparison pipeline,
-- interpretable throughput, energy, and fairness metrics.
+This project delivers a full RL-based uplink power-control pipeline with:
+- mathematically grounded environment modeling,
+- DDPG actor-critic training for continuous actions,
+- baseline benchmarking for interpretability,
+- robust evaluation and visualization outputs,
+- configurable execution via centralized config and CLI overrides,
+- live demo for qualitative policy behavior inspection.
 
-Key findings:
-- The RL controller learns channel-aware power adaptation instead of static
-  one-size-fits-all rules.
-- DDPG targets a practical throughput-energy tradeoff through explicit reward
-  shaping with power penalty.
-- Evaluation across shared channels enables fair method comparison and clearer
-  performance interpretation.
+Key outcomes:
+- Demonstrates adaptive power allocation under fading channels.
+- Provides throughput-energy-fairness analysis tools.
+- Maintains modular, reproducible, and publication-ready code organization.
 
-Possible extensions:
-- Multi-cell interference coordination and decentralized control variants.
-- Time-correlated fading and user mobility models beyond i.i.d. block fading.
-- Constraint-aware or multi-objective RL (fairness constraints, QoS guarantees).
-- Comparison with TD3, SAC, PPO, and model-based baselines.
-- Hyperparameter search and statistical confidence intervals over multiple seeds.
+Potential future extensions:
+- Multi-cell and inter-cell interference scenarios.
+- Temporal channel correlation and mobility.
+- Additional RL algorithm comparisons (TD3/SAC/PPO).
+- Constraint-aware and multi-objective formulations.
 
 End of Document

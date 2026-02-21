@@ -45,18 +45,24 @@ def compute_sinr_rates(
         sinr: Per-user SINR values.
         rates: Per-user spectral efficiencies in bps/Hz.
     """
-    # Convert to float32 to keep arithmetic consistent and fast.
+    # Convert to float32 so numerical behavior matches the Gym action/state dtype.
+    # This also reduces memory bandwidth compared with float64.
     gains = np.asarray(gains, dtype=np.float32)
     powers = np.asarray(powers, dtype=np.float32)
     noise_power = np.float32(noise_power)
 
-    # Received useful/interfering powers at the base station.
+    # Received power per user at the base station: P_i * g_i.
+    # We compute total received once and subtract each user's own signal to
+    # obtain interference from all other users efficiently.
     received_signal = powers * gains
     total_received = np.sum(received_signal, dtype=np.float32)
     interference = total_received - received_signal
 
-    # Small epsilon avoids division-by-zero in degenerate edge cases.
+    # SINR follows the uplink expression:
+    #   signal / (interference + noise)
+    # Small epsilon is a numerical guard for degenerate corner cases.
     sinr = received_signal / (interference + noise_power + 1e-12)
+    # Spectral efficiency uses Shannon mapping in bps/Hz.
     rates = np.log2(1.0 + sinr)
     return sinr, rates
 
@@ -129,14 +135,18 @@ class UplinkPowerControlEnv(gym.Env):
         self.episode_length = int(episode_length)
         self.detailed_info = bool(detailed_info)
 
-        # State: non-negative channel gains |h_i|^2.
+        # State construction:
+        #   observation = [g_1, ..., g_K] with g_i = |h_i|^2 >= 0.
+        # Infinite theoretical upper bound is represented with float32 max.
         self.observation_space = spaces.Box(
             low=0.0,
             high=np.finfo(np.float32).max,
             shape=(self.n_users,),
             dtype=np.float32,
         )
-        # Action: per-user powers, explicitly bounded by physical constraints.
+        # Action construction:
+        #   action = [P_1, ..., P_K] with each P_i constrained in [0, P_max].
+        # This encodes physical transmit-power limits directly in the space.
         self.action_space = spaces.Box(
             low=0.0,
             high=self.p_max,
@@ -145,7 +155,9 @@ class UplinkPowerControlEnv(gym.Env):
         )
 
         self.rng = np.random.default_rng(seed)
+        # Current channel realization s_t; updated each step/reset.
         self.current_gains = np.zeros(self.n_users, dtype=np.float32)
+        # Episode time index used for fixed-horizon termination.
         self.timestep = 0
 
     def _sample_channel_gains(self) -> np.ndarray:
@@ -174,9 +186,11 @@ class UplinkPowerControlEnv(gym.Env):
             info: Empty dictionary by design.
         """
         super().reset(seed=seed)
+        # Optional reseeding makes repeated experiments deterministic when needed.
         if seed is not None:
             self.rng = np.random.default_rng(seed)
 
+        # Episode always starts with a fresh channel draw.
         self.timestep = 0
         self.current_gains = self._sample_channel_gains()
         return self.current_gains.copy(), {}
@@ -196,24 +210,30 @@ class UplinkPowerControlEnv(gym.Env):
         """
         self.timestep += 1
 
-        # Even if the policy outputs invalid powers, clipping guarantees feasibility.
+        # Even with exploration noise, clipping guarantees physically valid powers.
         powers = np.clip(np.asarray(action, dtype=np.float32), 0.0, self.p_max)
 
+        # Compute instantaneous link quality and per-user rates for this slot.
         sinr, rates = compute_sinr_rates(
             gains=self.current_gains, powers=powers, noise_power=self.noise_power
         )
         sum_rate = float(np.sum(rates))
         total_power = float(np.sum(powers))
 
-        # Reward encourages high total spectral efficiency with power awareness.
+        # Reward logic:
+        # - maximize spectral efficiency (sum_rate),
+        # - penalize high energy usage (lambda_power * total_power).
+        # This scalar reward defines the throughput-energy tradeoff objective.
         reward = sum_rate - self.lambda_power * total_power
 
+        # Fairness is logged for analysis; it is not directly optimized here.
         fairness = jain_fairness(rates)
         info: dict[str, Any] = {
             "sum_rate": sum_rate,
             "total_power": total_power,
             "fairness": fairness,
         }
+        # Optional debug payloads are useful for analysis scripts and live demos.
         if self.detailed_info:
             info["sinr"] = sinr
             info["rates"] = rates

@@ -5,50 +5,63 @@
 [![Stable-Baselines3](https://img.shields.io/badge/Stable--Baselines3-2.3%2B-orange.svg)](https://github.com/DLR-RM/stable-baselines3)
 
 ## Project Overview
-This project addresses adaptive uplink transmit power control in a single-cell wireless network.  
-A centralized controller (base station) observes channel conditions and allocates user transmit powers to optimize network performance.
+This repository implements an adaptive uplink transmit power controller for a single-cell wireless network using Deep Deterministic Policy Gradient (DDPG).
 
-The objective is to maximize spectral efficiency while penalizing excessive power usage.  
-Adaptive power control is important because wireless channels vary over time and static policies cannot consistently balance throughput, energy usage, and fairness.
+In uplink communication, each user's transmission creates interference for other users. Fixed power rules (always max power, fixed heuristics) cannot consistently handle channel fluctuations and interference coupling. This project learns a channel-aware policy that allocates continuous transmit powers to balance:
+- throughput (sum spectral efficiency),
+- energy usage (total transmit power),
+- fairness (Jain's fairness index).
 
-Deep Deterministic Policy Gradient (DDPG) is used because the action space (per-user transmit powers) is continuous, and DDPG is well-suited for continuous control with actor-critic learning.
+DDPG is used because power control is a continuous-action problem and actor-critic methods are effective for such settings.
+
+## Why Adaptive Power Control
+- Wireless channels are stochastic and time-varying due to fading.
+- A static policy cannot exploit favorable channel states or conserve energy in poor states.
+- Adaptive control improves long-term operating efficiency under realistic channel variability.
 
 ## System Model
-We consider a single-cell uplink scenario with \(K\) users.
+We consider one base station and \(K\) uplink users (\(3 \le K \le 5\)).
 
-Channel fading:
-\[
-h_i \sim \mathcal{CN}(0,1)
-\]
+### 1) Channel Model (Rayleigh Fading)
+$$
+h_i \sim \mathcal{CN}(0,1), \qquad g_i = |h_i|^2
+$$
+Plain-text fallback: `h_i ~ CN(0,1), g_i = |h_i|^2`.
 
-SINR for user \(i\):
-\[
+### 2) Uplink SINR
+$$
 \mathrm{SINR}_i = \frac{P_i |h_i|^2}{\sum_{j \ne i} P_j |h_j|^2 + \sigma^2}
-\]
+$$
+Plain-text fallback: `SINR_i = (P_i*|h_i|^2)/(sum_{j != i} P_j*|h_j|^2 + sigma^2)`.
 
-Spectral efficiency:
-\[
+### 3) Spectral Efficiency
+$$
 R_i = \log_2(1 + \mathrm{SINR}_i)
-\]
+$$
+Plain-text fallback: `R_i = log2(1 + SINR_i)`.
 
-Reward:
-\[
+### 4) Reward Function
+$$
 \mathrm{Reward} = \sum_{i=1}^{K} R_i - \lambda \sum_{i=1}^{K} P_i
-\]
+$$
+Plain-text fallback: `Reward = sum_i R_i - lambda*sum_i P_i`.
 
-Jain's fairness index:
-\[
+### 5) Jain's Fairness Index
+$$
 J = \frac{\left(\sum_{i=1}^{K} R_i\right)^2}{K \sum_{i=1}^{K} R_i^2}
-\]
+$$
+Plain-text fallback: `J = (sum_i R_i)^2 / (K*sum_i R_i^2)`.
 
-## DDPG Formulation
+## RL/DDPG Formulation
 - `Agent`: centralized controller at the base station.
-- `State`: current channel gain vector \([|h_1|^2, \dots, |h_K|^2]\).
-- `Action`: continuous transmit power vector \([P_1, \dots, P_K]\), clipped to \([0, P_{\max}]\).
-- `Reward`: throughput-power tradeoff shown above.
-- `Actor-Critic`: actor outputs deterministic power allocation; critic estimates \(Q(s,a)\) to guide policy updates through deterministic policy gradients.
+- `State`: channel gain vector \([|h_1|^2, \dots, |h_K|^2]\).
+- `Action`: continuous power vector \([P_1, \dots, P_K]\), clipped into \([0, P_{\max}]\).
+- `Reward`: throughput-power tradeoff defined above.
+- `Actor`: deterministic policy network \(\mu(s)\) producing powers.
+- `Critic`: Q-network \(Q(s,a)\) evaluating action quality.
+- `Training mechanics`: replay buffer, target networks, action noise for exploration.
 
-## Project Structure
+## Repository Structure
 ```text
 project/
 |
@@ -59,55 +72,106 @@ project/
 |-- demo.py
 |-- config.py
 |-- requirements.txt
+|-- Run_Project_On_Colab.ipynb
 `-- README.md
 ```
 
 ## Installation
+### 1) Clone
 ```bash
 git clone <repo-url>
 cd project
+```
+
+### 2) (Recommended) Create virtual environment
+```bash
+python -m venv .venv
+```
+Windows PowerShell:
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+Linux/macOS:
+```bash
+source .venv/bin/activate
+```
+
+### 3) Install dependencies
+```bash
 pip install -r requirements.txt
 ```
 
-## Run Instructions
-Training:
+## How to Run (Step-by-Step)
+### Step 1: Train DDPG
+Default training:
 ```bash
 python train_ddpg.py
 ```
 
-Evaluation:
+Custom training example:
+```bash
+python train_ddpg.py --users 4 --timesteps 100000 --learning-rate 1e-3 --seed 42
+```
+
+Quick smoke run:
+```bash
+python train_ddpg.py --mode quick --timesteps 8000
+```
+
+### Step 2: Evaluate DDPG vs Baselines
+Default evaluation:
 ```bash
 python evaluation.py
 ```
 
-Demo (live channel/power adaptation visualization):
+Custom evaluation example:
 ```bash
-python demo.py
+python evaluation.py --users 4 --eval-steps 10000 --runs 3 --seed 42
 ```
 
-## Google Colab
-A Colab-ready notebook is provided as:
+This prints a comparison table and saves figures/CSV.
+
+### Step 3: Run Live Inference Demo
+```bash
+python demo.py --steps 200 --pause 0.1
+```
+
+The demo shows two real-time plots:
+- top: current channel gains,
+- bottom: DDPG allocated powers.
+
+### Step 4: (Optional) Run in Google Colab
+Open and run:
 - `Run_Project_On_Colab.ipynb`
 
-Typical usage in Colab:
-1. Open the notebook in Google Colab.
-2. Set repository path (clone or uploaded project).
-3. Run all cells from top to bottom to install dependencies, train, evaluate, and visualize results.
+The notebook includes dependency installation, training, evaluation, inline plot display, and artifact export.
 
-## Results
-The repository evaluation pipeline reports and visualizes:
-- `Convergence`: training reward trend over episodes/timesteps.
-- `Sum-rate comparison`: DDPG vs Equal/Fractional/Greedy baselines.
-- `Fairness`: Jain's fairness index comparison across methods.
-- `Power efficiency`: \(\text{Sum Rate} / \text{Total Power}\).
-- `User-rate CDF`: distribution-level behavior for each method.
+## Outputs
+Training and evaluation generate artifacts such as:
+- model checkpoints (`ddpg_power_control_model.zip`, `trained_ddpg_model.zip`),
+- reward traces and convergence figures,
+- sum-rate, power-usage, fairness, and power-efficiency comparisons,
+- user-rate CDF plot,
+- CSV summary (`evaluation_summary.csv`).
+
+Depending on script settings, outputs are stored in `results/` and/or root-level compatibility paths.
+
+## Results Interpretation
+- `Convergence`: increasing/saturating reward trend indicates policy stabilization.
+- `Sum rate`: aggregate throughput of the network.
+- `Power efficiency`: throughput per unit transmit power.
+- `Fairness`: Jain's index shows how evenly rates are distributed.
+
+High sum rate alone may come with poor fairness; reward-aware DDPG aims for a practical tradeoff.
+
+## Math Rendering Note
+If equations do not render in your editor preview, open the README on GitHub web UI or use the plain-text fallback lines provided below each equation.
 
 ## Future Work
-- Extend to multi-cell interference coordination.
-- Include time-correlated fading and mobility models.
-- Compare with additional RL algorithms (TD3, SAC, PPO).
-- Add confidence intervals across more random seeds.
-- Explore constrained and multi-objective RL formulations.
+- Multi-cell extension with inter-cell interference.
+- Time-correlated fading and mobility-aware dynamics.
+- Comparison with TD3/SAC/PPO under identical settings.
+- Constrained RL for QoS and fairness guarantees.
 
 ## License
 This project is released under the MIT License.

@@ -1,4 +1,11 @@
-"""Evaluate DDPG and baseline power-control policies with publication-quality outputs."""
+"""Evaluate DDPG and baseline power-control policies with publication-quality outputs.
+
+What this script does:
+1) Load a trained model.
+2) Generate shared channel sequences for fair method comparison.
+3) Compute metrics (sum rate, power, fairness, power efficiency).
+4) Produce table/CSV summaries and publication-style plots.
+"""
 
 from __future__ import annotations
 
@@ -21,6 +28,7 @@ from baselines import (
 from environment import UplinkPowerControlEnv, compute_sinr_rates, jain_fairness
 
 LOGGER = logging.getLogger(__name__)
+# Consistent method ordering keeps tables/plots stable across runs.
 METHOD_ORDER = ["Equal", "Fractional", "Greedy", "DDPG"]
 
 
@@ -60,9 +68,11 @@ def copy_if_needed(source: Path, destination: Path) -> None:
 def generate_channel_sequence(n_users: int, n_steps: int, seed: int) -> np.ndarray:
     """Generate a deterministic Rayleigh-fading gain sequence for fair comparisons."""
     rng = np.random.default_rng(seed)
+    # CN(0,1) is built from two N(0, 0.5) components (real/imag).
     h_real = rng.normal(0.0, np.sqrt(0.5), size=(n_steps, n_users))
     h_imag = rng.normal(0.0, np.sqrt(0.5), size=(n_steps, n_users))
     h = h_real + 1j * h_imag
+    # Convert complex channel coefficients to power gains.
     gains = np.abs(h) ** 2
     return gains.astype(np.float32)
 
@@ -71,9 +81,12 @@ def summarize_metrics(
     sum_rates: list[float], total_powers: list[float], fairness_values: list[float]
 ) -> dict[str, float]:
     """Aggregate step-level metrics into method-level averages."""
+    # Sum rate and power capture throughput-energy tradeoff.
     avg_sum_rate = float(np.mean(sum_rates))
     avg_total_power = float(np.mean(total_powers))
+    # Jain index summarizes user-rate equality.
     avg_fairness = float(np.mean(fairness_values))
+    # Power efficiency helps compare throughput per energy unit.
     power_efficiency = float(avg_sum_rate / (avg_total_power + 1e-12))
     return {
         "avg_sum_rate": avg_sum_rate,
@@ -106,8 +119,10 @@ def evaluate_baseline_on_channels(
     fairness_values: list[float] = []
     rate_samples: list[np.ndarray] = []
 
+    # Run policy on each channel sample and track both aggregate and per-user stats.
     for gains in channel_gains:
         powers = baseline_powers(policy_name=policy_name, gains=gains, p_max=p_max)
+        # Use the same SINR/rate model as RL evaluation for apples-to-apples metrics.
         _, rates = compute_sinr_rates(gains=gains, powers=powers, noise_power=noise_power)
         sum_rates.append(float(np.sum(rates)))
         total_powers.append(float(np.sum(powers)))
@@ -130,8 +145,10 @@ def evaluate_ddpg_on_channels(
     fairness_values: list[float] = []
     rate_samples: list[np.ndarray] = []
 
+    # Query deterministic actor output for each channel realization.
     for gains in channel_gains:
         action, _ = model.predict(gains, deterministic=True)
+        # Safety clipping enforces feasible power bounds.
         powers = np.clip(np.asarray(action, dtype=np.float32), 0.0, p_max)
         _, rates = compute_sinr_rates(gains=gains, powers=powers, noise_power=noise_power)
         sum_rates.append(float(np.sum(rates)))
@@ -140,6 +157,7 @@ def evaluate_ddpg_on_channels(
         rate_samples.append(rates.astype(np.float32))
 
     metrics = summarize_metrics(sum_rates, total_powers, fairness_values)
+    # Optionally return per-user rate samples for distribution/CDF plotting.
     if return_rates:
         return metrics, np.vstack(rate_samples)
     return metrics
@@ -150,6 +168,7 @@ def aggregate_run_metrics(
 ) -> dict[str, dict[str, float]]:
     """Average method metrics across multiple independent evaluation runs."""
     aggregated: dict[str, dict[str, float]] = {}
+    # Average each method's metrics across independent random-channel runs.
     for method in METHOD_ORDER:
         aggregated[method] = {
             "avg_sum_rate": float(np.mean([run[method]["avg_sum_rate"] for run in per_run_metrics])),
@@ -239,6 +258,7 @@ def save_figure(fig: plt.Figure, filename: str) -> None:
     results_output.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
     fig.savefig(results_output, dpi=300)
+    # Mirror plots to root-level path for compatibility with earlier project layout.
     copy_if_needed(results_output, legacy_output)
     plt.close(fig)
 
@@ -263,6 +283,7 @@ def plot_bar_metric(
     ax.set_title(title)
 
     for bar, value in zip(bars, values):
+        # Annotated values improve readability in reports/slides.
         ax.text(
             bar.get_x() + bar.get_width() / 2,
             bar.get_height(),
@@ -286,6 +307,7 @@ def plot_rate_cdf(rate_samples: dict[str, np.ndarray], filename: str) -> None:
     }
 
     for method in METHOD_ORDER:
+        # Flatten rates across users/steps to build empirical CDF per method.
         rates = np.sort(rate_samples[method].ravel())
         if rates.size == 0:
             continue
@@ -322,8 +344,10 @@ def plot_training_reward_vs_timesteps(episode_length: int, filename: str) -> Non
         )
         return
 
+    # Approximate timestep index from episode count and episode horizon.
     timesteps = np.arange(1, rewards.size + 1, dtype=np.int64) * int(episode_length)
     window = min(20, rewards.size)
+    # Smoothing helps reveal convergence trend beneath stochastic variability.
     smooth = np.convolve(rewards, np.ones(window) / window, mode="valid")
     smooth_timesteps = timesteps[window - 1 :]
 
@@ -407,6 +431,7 @@ def main() -> None:
     per_run_metrics: list[dict[str, dict[str, float]]] = []
     per_method_rates: dict[str, list[np.ndarray]] = {method: [] for method in METHOD_ORDER}
 
+    # Repeat evaluation with different seeds and average to reduce random variance.
     for run_idx in range(args.runs):
         run_seed = args.seed + run_idx
         channel_seq = generate_channel_sequence(
@@ -457,11 +482,13 @@ def main() -> None:
         LOGGER.info("Completed evaluation run %d/%d with seed=%d", run_idx + 1, args.runs, run_seed)
 
     averaged_results = aggregate_run_metrics(per_run_metrics)
+    # Merge per-run rates for final CDF plotting.
     merged_rates = {
         method: np.concatenate(rate_batches, axis=0)
         for method, rate_batches in per_method_rates.items()
     }
 
+    # Console table + power-efficiency lines for quick benchmarking view.
     print_results(averaged_results)
 
     plot_training_reward_vs_timesteps(
