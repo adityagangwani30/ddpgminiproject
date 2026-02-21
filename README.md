@@ -20,45 +20,40 @@ DDPG is used because power control is a continuous-action problem and actor-crit
 - Adaptive control improves long-term operating efficiency under realistic channel variability.
 
 ## System Model
-We consider one base station and \(K\) uplink users (\(3 \le K \le 5\)).
+We consider one base station and $K$ uplink users ($3 \le K \le 5$).
 
 ### 1) Channel Model (Rayleigh Fading)
 $$
 h_i \sim \mathcal{CN}(0,1), \qquad g_i = |h_i|^2
 $$
-Plain-text fallback: `h_i ~ CN(0,1), g_i = |h_i|^2`.
 
 ### 2) Uplink SINR
 $$
-\mathrm{SINR}_i = \frac{P_i |h_i|^2}{\sum_{j \ne i} P_j |h_j|^2 + \sigma^2}
+\mathrm{SINR}_i = \frac{P_i |h_i|^2}{\sum_{j \neq i} P_j |h_j|^2 + \sigma^2}
 $$
-Plain-text fallback: `SINR_i = (P_i*|h_i|^2)/(sum_{j != i} P_j*|h_j|^2 + sigma^2)`.
 
 ### 3) Spectral Efficiency
 $$
 R_i = \log_2(1 + \mathrm{SINR}_i)
 $$
-Plain-text fallback: `R_i = log2(1 + SINR_i)`.
 
 ### 4) Reward Function
 $$
 \mathrm{Reward} = \sum_{i=1}^{K} R_i - \lambda \sum_{i=1}^{K} P_i
 $$
-Plain-text fallback: `Reward = sum_i R_i - lambda*sum_i P_i`.
 
 ### 5) Jain's Fairness Index
 $$
 J = \frac{\left(\sum_{i=1}^{K} R_i\right)^2}{K \sum_{i=1}^{K} R_i^2}
 $$
-Plain-text fallback: `J = (sum_i R_i)^2 / (K*sum_i R_i^2)`.
 
 ## RL/DDPG Formulation
 - `Agent`: centralized controller at the base station.
-- `State`: channel gain vector \([|h_1|^2, \dots, |h_K|^2]\).
-- `Action`: continuous power vector \([P_1, \dots, P_K]\), clipped into \([0, P_{\max}]\).
+- `State`: channel gain vector $[|h_1|^2, \dots, |h_K|^2]$.
+- `Action`: continuous power vector $[P_1, \dots, P_K]$, clipped into $[0, P_{\max}]$.
 - `Reward`: throughput-power tradeoff defined above.
-- `Actor`: deterministic policy network \(\mu(s)\) producing powers.
-- `Critic`: Q-network \(Q(s,a)\) evaluating action quality.
+- `Actor`: deterministic policy network $\mu(s)$ producing powers.
+- `Critic`: Q-network $Q(s,a)$ evaluating action quality.
 - `Training mechanics`: replay buffer, target networks, action noise for exploration.
 
 ## Repository Structure
@@ -165,7 +160,7 @@ Depending on script settings, outputs are stored in `results/` and/or root-level
 High sum rate alone may come with poor fairness; reward-aware DDPG aims for a practical tradeoff.
 
 ## Math Rendering Note
-If equations do not render in your editor preview, open the README on GitHub web UI or use the plain-text fallback lines provided below each equation.
+If equations do not render in your editor preview, open the README on GitHub web UI, which supports Markdown math rendering.
 
 ## Future Work
 - Multi-cell extension with inter-cell interference.
