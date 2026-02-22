@@ -541,6 +541,18 @@ def main() -> None:
     LOGGER.info("  %s", project_config.RATE_CDF_PLOT_FILENAME)
     LOGGER.info("Saved CSV summary: %s", csv_path.resolve())
 
+    # ---- Automatic LaTeX report generation ----
+    from generate_results_report import generate_report
+
+    report_config = {
+        "n_users": args.users,
+        "noise_power": args.noise_power,
+        "lambda_power": args.lambda_power,
+        "training_timesteps": project_config.TRAINING_TIMESTEPS,
+        "episode_length": args.episode_length,
+    }
+    generate_report(averaged_results, report_config, project_config.RESULTS_DIR)
+
 
 if __name__ == "__main__":
     main()

@@ -311,7 +311,95 @@ All methods are tested on the same channel sequences, which removes random
 channel luck and ensures differences are due to policy behavior.
 
 =====================================================================
-8. CONCLUSION
+9. AUTOMATED RESULTS REPORTING PIPELINE
+=====================================================================
+
+9.1 Overview
+After evaluation completes, the system automatically generates a professional
+Results and Performance Analysis report in PDF format. This report is saved
+as results/Results_Analysis_Report.pdf and provides a self-contained summary
+of all evaluation outcomes with embedded plots and computed metric values.
+
+This feature eliminates the need for manual report assembly: evaluation metrics,
+comparison plots, and interpretive analysis are combined into a single document
+that can be reviewed, submitted, or presented immediately after running
+evaluation.py.
+
+9.2 Pipeline Mechanism
+The reporting pipeline (implemented in generate_results_report.py) operates in
+the following stages:
+
+Stage 1: Metric Collection
+  After evaluation.py computes per-method metrics (sum rate, total power,
+  Jain fairness index, power efficiency) averaged over multiple independent
+  channel sequences, it passes the aggregated results dictionary and experiment
+  configuration parameters to the report generator.
+
+Stage 2: Plot Reference
+  The report references all PNG plots already generated and saved to the
+  results/ directory by evaluation.py. These include:
+  - training_reward_vs_timesteps.png
+  - sum_rate_comparison.png
+  - power_usage_comparison.png
+  - power_efficiency_comparison.png
+  - fairness_comparison.png
+  - user_rate_cdf.png (included conditionally if available)
+
+Stage 3: PDF Construction
+  The report generator builds the PDF programmatically using the fpdf2
+  Python library. No external compilation tools are required. Each section
+  embeds the relevant plot image and inserts computed metric values directly
+  into the analysis text, producing accurate and reproducible prose.
+
+Stage 4: Output
+  The completed PDF is written to results/Results_Analysis_Report.pdf.
+
+9.3 Report Contents
+The generated report contains only results analysis. It does not restate
+system model equations, algorithm derivations, or architectural descriptions
+that are already covered in this documentation. The report includes:
+
+  1) Title and Configuration Summary
+     Project name, date, and key experiment parameters (number of users,
+     noise power, power penalty coefficient, training timesteps, episode
+     length).
+
+  2) Training Convergence Analysis
+     Interpretation of the training reward curve, discussion of convergence
+     behavior and learning stability.
+
+  3) Sum Rate Comparison
+     Cross-method comparison of average sum rate with a metrics table and
+     bar chart. Analysis of why DDPG outperforms or compares to baselines.
+
+  4) Power Efficiency Analysis
+     Discussion of transmit power usage and throughput-per-unit-power across
+     methods. Explains the reward-power tradeoff learned by the agent.
+
+  5) Fairness Analysis
+     Jain Fairness Index results with interpretation of fairness-performance
+     tradeoffs.
+
+  6) CDF of User Rates (conditional)
+     Empirical CDF of per-user spectral efficiency, interpreting rate
+     distributions and disparity across methods.
+
+  7) Final Observations
+     Enumerated summary of key findings: sum-rate superiority, power
+     efficiency, fairness tradeoff, and convergence confirmation.
+
+9.4 Benefits for Reproducibility and Grading
+  - All metric values in the report are computed and inserted programmatically,
+    eliminating transcription errors.
+  - The report is regenerated from scratch on every evaluation run, ensuring
+    it always reflects the latest model and configuration.
+  - Evaluators can verify results by re-running evaluation.py and comparing
+    the regenerated report against the submitted version.
+  - The PDF format provides a portable, printable artifact suitable for
+    academic review and grading.
+
+=====================================================================
+10. CONCLUSION
 =====================================================================
 
 This project delivers a full RL-based uplink power-control pipeline with:
@@ -319,12 +407,14 @@ This project delivers a full RL-based uplink power-control pipeline with:
 - DDPG actor-critic training for continuous actions,
 - baseline benchmarking for interpretability,
 - robust evaluation and visualization outputs,
+- automated results reporting with embedded analysis,
 - configurable execution via centralized config and CLI overrides,
 - live demo for qualitative policy behavior inspection.
 
 Key outcomes:
 - Demonstrates adaptive power allocation under fading channels.
 - Provides throughput-energy-fairness analysis tools.
+- Generates a professional PDF report automatically after evaluation.
 - Maintains modular, reproducible, and publication-ready code organization.
 
 Potential future extensions:
